@@ -21,7 +21,7 @@ from app.release_update import (
 
 logger = logging.getLogger("application")
 
-REMOTE_URL = "https://github.com/enki-somer/mt5-auto.git"
+REMOTE_URL = "https://github.com/namekad/mt-auto.git"
 BRANCH = "main"
 POLL_SECONDS = 90
 RELEASE_POLL_SECONDS = 180

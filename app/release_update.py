@@ -14,7 +14,7 @@ from pathlib import Path
 from app.build_stamp import GIT_SHA
 from app.paths import user_dir
 
-RELEASES_URL = "https://api.github.com/repos/enki-somer/mt5-auto/releases/latest"
+RELEASES_URL = "https://api.github.com/repos/namekad/mt-auto/releases/latest"
 ASSET_NAME = "TelegramMT5.zip"
 EXE_NAME = "TelegramMT5.exe"
 _APPLY_BAT = """@echo off
