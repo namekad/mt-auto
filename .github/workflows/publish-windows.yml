@@ -31,4 +31,4 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${{ github.sha }}" TelegramMT5.zip --title "${{ github.sha }}" --notes "Windows app build"
+        run: gh release create "build-${{ github.sha }}" TelegramMT5.zip --title "${{ github.sha }}" --notes "Windows app build"

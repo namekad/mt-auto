@@ -10,6 +10,7 @@ from app.release_update import (
     pack_dist,
     parse_latest_release,
     release_needs_update,
+    release_sha_from_tag,
 )
 from app.updater import UpdateAction, plan_update, relaunch_command, requirements_touched
 
@@ -87,10 +88,15 @@ def test_release_needs_update_when_build_sha_differs() -> None:
     assert not release_needs_update("aaa", "")
 
 
+def test_release_sha_from_tag_strips_build_prefix() -> None:
+    assert release_sha_from_tag("build-abc123") == "abc123"
+    assert release_sha_from_tag("abc123") == "abc123"
+
+
 def test_parse_latest_release_reads_windows_zip() -> None:
     parsed = parse_latest_release(
         {
-            "tag_name": "abc123",
+            "tag_name": "build-abc123",
             "assets": [
                 {"name": "notes.txt", "browser_download_url": "https://example.test/notes"},
                 {"name": "TelegramMT5.zip", "browser_download_url": "https://example.test/app.zip"},

@@ -64,8 +64,16 @@ def release_needs_update(local_sha: str, remote_sha: str) -> bool:
     return local_sha.strip() != remote
 
 
+def release_sha_from_tag(tag_name: str) -> str:
+    tag = tag_name.strip()
+    prefix = "build-"
+    if tag.startswith(prefix):
+        return tag[len(prefix) :].strip()
+    return tag
+
+
 def parse_latest_release(payload: dict[str, object]) -> ReleaseAsset | None:
-    sha = str(payload.get("tag_name") or "").strip()
+    sha = release_sha_from_tag(str(payload.get("tag_name") or ""))
     assets = payload.get("assets")
     if not sha or not isinstance(assets, list):
         return None
