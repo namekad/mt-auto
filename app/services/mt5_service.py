@@ -8,6 +8,7 @@ from typing import Any
 
 from app.config import Settings, TradingRules
 from app.exceptions import LiveModeDisabledError, Mt5AccountMismatchError, Mt5ServiceError
+from app.trading.broker import BrokerPosition
 from app.trading.models import Direction, OrderType, TradeSignal
 from app.trading.symbol_resolver import BrokerSymbol
 from app.trading.risk import resolve_volume, select_take_profit
@@ -27,6 +28,7 @@ DEFAULT_TERMINAL = Path(r"C:\Program Files\MetaTrader 5\terminal64.exe")
 INIT_TIMEOUT_MS = 120_000
 NOT_READY_CODES = {-10003, -10001, -10000, -2}
 TRADE_ACTION_DEAL = 1
+TRADE_ACTION_SLTP = 6
 TRADE_ACTION_PENDING = 5
 ORDER_TYPE_BUY = 0
 ORDER_TYPE_SELL = 1
@@ -604,6 +606,260 @@ class Mt5Service:
             response=payload,
             error_text=error_text,
         )
+
+    def quote(self, symbol: str) -> Quote | None:
+        if not self._verified:
+            return None
+        try:
+            self.ensure_symbol(symbol)
+            return self.get_bid_ask(symbol)
+        except Mt5ServiceError as error:
+            logger.warning("Could not read %s quote: %s", symbol, error)
+            return None
+
+    def list_tracked_positions(self) -> list[BrokerPosition]:
+        if not self._initialized:
+            return []
+        tracked: list[BrokerPosition] = []
+        for position in self.get_positions():
+            tracked.append(
+                BrokerPosition(
+                    ticket=int(getattr(position, "ticket", 0) or 0),
+                    symbol=str(getattr(position, "symbol", "") or ""),
+                    sl=float(getattr(position, "sl", 0) or 0),
+                    tp=float(getattr(position, "tp", 0) or 0),
+                    volume=float(getattr(position, "volume", 0) or 0),
+                    comment=str(getattr(position, "comment", "") or ""),
+                    magic=int(getattr(position, "magic", 0) or 0),
+                )
+            )
+        return tracked
+
+    def history_contains(self, ticket: int) -> bool:
+        if mt5 is None or not self._initialized or ticket <= 0:
+            return False
+        deals = mt5.history_deals_get(position=ticket)
+        if deals:
+            return True
+        orders = mt5.history_orders_get(ticket=ticket)
+        return bool(orders)
+
+    def open_market_leg(
+        self,
+        *,
+        symbol: str,
+        direction: Direction,
+        volume: float,
+        stop_loss: float,
+        take_profit: float,
+        comment: str,
+    ) -> OrderResult:
+        self._assert_demo_ready()
+        if mt5 is None:
+            raise Mt5ServiceError("MT5 is not initialized.")
+        if not self.ensure_symbol(symbol):
+            raise Mt5ServiceError(f"Symbol is not available in MT5: {symbol}")
+        info = self.get_symbol_info(symbol)
+        quote = self.get_bid_ask(symbol)
+        if direction is Direction.BUY:
+            price = quote.ask
+            type_code = ORDER_TYPE_BUY
+        elif direction is Direction.SELL:
+            price = quote.bid
+            type_code = ORDER_TYPE_SELL
+        else:
+            never: Direction = direction
+            raise ValueError(f"Unhandled direction: {never}")
+        digits = int(getattr(info, "digits", 5) or 5)
+        price = round(float(price), digits)
+        sized = normalize_volume(
+            volume,
+            float(getattr(info, "volume_min", 0.01) or 0.01),
+            float(getattr(info, "volume_max", volume) or volume),
+            float(getattr(info, "volume_step", 0.01) or 0.01),
+        )
+        sl = round(float(stop_loss), digits)
+        tp = round(float(take_profit), digits)
+        point = float(getattr(info, "point", 0) or 0)
+        stops = int(getattr(info, "trade_stops_level", 0) or 0)
+        if stops and point:
+            min_dist = stops * point
+            if abs(price - sl) < min_dist:
+                raise Mt5ServiceError("Stop loss is too close to price for this symbol.")
+            if abs(price - tp) < min_dist:
+                raise Mt5ServiceError("Take profit is too close to price for this symbol.")
+        request = build_demo_order_request(
+            symbol=symbol,
+            action=TRADE_ACTION_DEAL,
+            order_type=type_code,
+            volume=sized,
+            price=price,
+            stop_loss=sl,
+            take_profit=tp,
+            filling=filling_type(int(getattr(info, "filling_mode", 0) or 0)),
+            comment=comment,
+        )
+        logger.info(
+            "Sending DEMO leg %s %s volume=%s price=%s comment=%s",
+            symbol,
+            direction.value,
+            sized,
+            price,
+            comment,
+        )
+        return self._send_order(request, fallback_volume=sized, fallback_price=price, comment=comment)
+
+    def modify_stop_loss(self, ticket: int, stop_loss: float) -> OrderResult:
+        self._assert_demo_ready()
+        if mt5 is None:
+            raise Mt5ServiceError("MT5 is not initialized.")
+        position = self._position_raw(ticket)
+        if position is None:
+            return OrderResult(
+                ok=False,
+                retcode=None,
+                comment="missing",
+                ticket=ticket,
+                order=None,
+                deal=None,
+                volume=None,
+                price=None,
+                request={"position": ticket, "sl": stop_loss},
+                response={},
+                error_text="Position is not open.",
+            )
+        symbol = str(position.symbol)
+        info = self.get_symbol_info(symbol)
+        digits = int(getattr(info, "digits", 5) or 5)
+        request = {
+            "action": TRADE_ACTION_SLTP,
+            "position": int(position.ticket),
+            "symbol": symbol,
+            "sl": round(float(stop_loss), digits),
+            "tp": round(float(position.tp), digits) if float(position.tp or 0) else 0.0,
+            "magic": DEFAULT_MAGIC,
+        }
+        logger.info("Moving SL on ticket %s to %s", ticket, request["sl"])
+        return self._send_order(request, fallback_volume=float(position.volume), fallback_price=None)
+
+    def close_position(self, ticket: int) -> OrderResult:
+        self._assert_demo_ready()
+        if mt5 is None:
+            raise Mt5ServiceError("MT5 is not initialized.")
+        position = self._position_raw(ticket)
+        if position is None:
+            return OrderResult(
+                ok=True,
+                retcode=None,
+                comment="already closed",
+                ticket=ticket,
+                order=None,
+                deal=None,
+                volume=None,
+                price=None,
+                request={"position": ticket},
+                response={},
+            )
+        symbol = str(position.symbol)
+        info = self.get_symbol_info(symbol)
+        quote = self.get_bid_ask(symbol)
+        is_buy = int(position.type) == ORDER_TYPE_BUY
+        if is_buy:
+            type_code = ORDER_TYPE_SELL
+            price = quote.bid
+        else:
+            type_code = ORDER_TYPE_BUY
+            price = quote.ask
+        digits = int(getattr(info, "digits", 5) or 5)
+        request = build_demo_order_request(
+            symbol=symbol,
+            action=TRADE_ACTION_DEAL,
+            order_type=type_code,
+            volume=float(position.volume),
+            price=round(float(price), digits),
+            stop_loss=None,
+            take_profit=None,
+            filling=filling_type(int(getattr(info, "filling_mode", 0) or 0)),
+            comment=f"close {ticket}",
+        )
+        request["position"] = int(position.ticket)
+        logger.info("Closing ticket %s at market", ticket)
+        return self._send_order(
+            request,
+            fallback_volume=float(position.volume),
+            fallback_price=round(float(price), digits),
+        )
+
+    def _assert_demo_ready(self) -> None:
+        self._settings.assert_not_live()
+        if self._settings.resolved_app_mode.value != "DEMO":
+            raise LiveModeDisabledError("Orders are allowed only when APP_MODE=DEMO.")
+        if mt5 is None or not self._initialized:
+            raise Mt5ServiceError("MT5 is not initialized.")
+        if not self._verified:
+            raise Mt5ServiceError("MT5 account is not verified.")
+        snapshot = self.get_account_info()
+        if snapshot.trade_mode == ACCOUNT_TRADE_MODE_REAL:
+            raise Mt5AccountMismatchError("Refusing to send an order on a real account.")
+        if snapshot.trade_mode not in {
+            ACCOUNT_TRADE_MODE_DEMO,
+            ACCOUNT_TRADE_MODE_CONTEST,
+        }:
+            raise Mt5AccountMismatchError("Refusing to send an order on an unconfirmed account type.")
+
+    def _position_raw(self, ticket: int) -> Any:
+        if mt5 is None or not self._initialized:
+            return None
+        found = mt5.positions_get(ticket=ticket)
+        if not found:
+            return None
+        return found[0]
+
+    def _send_order(
+        self,
+        request: dict[str, object],
+        *,
+        fallback_volume: float,
+        fallback_price: float | None,
+        comment: str | None = None,
+    ) -> OrderResult:
+        if mt5 is None:
+            raise Mt5ServiceError("MT5 is not initialized.")
+        raw = mt5.order_send(request)
+        payload = result_payload(raw)
+        retcode = int(getattr(raw, "retcode", 0) or 0) if raw is not None else None
+        ok = raw is not None and retcode in ORDER_SUCCESS_CODES
+        error_text = None if ok else str(getattr(raw, "comment", None) or mt5.last_error())
+        if not ok:
+            logger.error("DEMO order rejected retcode=%s comment=%s", retcode, error_text)
+        ticket = int(getattr(raw, "order", 0) or 0) or None if raw is not None else None
+        symbol = str(request.get("symbol") or "")
+        if ok and comment and symbol:
+            matched = self._ticket_for_comment(symbol, comment)
+            if matched is not None:
+                ticket = matched
+        return OrderResult(
+            ok=ok,
+            retcode=retcode,
+            comment=str(getattr(raw, "comment", "") or ""),
+            ticket=ticket,
+            order=int(getattr(raw, "order", 0) or 0) or None if raw is not None else None,
+            deal=int(getattr(raw, "deal", 0) or 0) or None if raw is not None else None,
+            volume=float(getattr(raw, "volume", 0) or 0) or fallback_volume,
+            price=float(getattr(raw, "price", 0) or 0) or fallback_price,
+            request=request,
+            response=payload,
+            error_text=error_text,
+        )
+
+    def _ticket_for_comment(self, symbol: str, comment: str) -> int | None:
+        wanted = order_comment(comment)
+        for position in self.list_tracked_positions():
+            if position.symbol != symbol or position.magic != DEFAULT_MAGIC:
+                continue
+            if position.comment == wanted:
+                return position.ticket
+        return None
 
     def shutdown(self) -> None:
         if mt5 is None:

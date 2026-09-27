@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.config import Settings, TradingRules
+from app.config import ExecutionMode, Settings, TradingRules
 from app.database.repository import Repository
+from app.parser.detector import is_close_setup
 from app.parser.parser import parse_signal
 from app.trading.duplicates import (
-    find_semantic_duplicates,
     message_already_executed,
     message_already_processed,
 )
 from app.trading.execution_controller import ExecutionController
+from app.trading.setup_manager import SetupManager
 from app.trading.loop import (
     LoopStep,
     SignalLoopRecord,
@@ -21,6 +22,8 @@ from app.trading.loop import (
 from app.trading.models import (
     ExecutionStatus,
     MessageStatus,
+    Setup,
+    SetupState,
     TradeSignal,
     ValidationStatus,
 )
@@ -44,6 +47,7 @@ class SignalProcessor:
         repository: Repository,
         state: RuntimeState,
         execution: ExecutionController,
+        setup_manager: SetupManager | None = None,
     ) -> None:
         self._settings = settings
         self._rules = rules
@@ -51,6 +55,7 @@ class SignalProcessor:
         self._repository = repository
         self._state = state
         self._execution = execution
+        self._setup_manager = setup_manager
 
     def handle_new_message(
         self,
@@ -61,6 +66,7 @@ class SignalProcessor:
         channel_name: str | None = None,
         message_date: datetime | None = None,
         is_forwarded: bool = False,
+        reply_to_message_id: int | None = None,
         market_price: float | None = None,
         symbol_exists: bool | None = None,
         open_positions: int | None = None,
@@ -94,6 +100,17 @@ class SignalProcessor:
                 ],
                 outcome="Not from an allowed channel. No order was sent.",
                 kind="bad",
+            )
+            return None
+
+        if is_close_setup(raw_text):
+            self.handle_close_setup(
+                channel_id,
+                message_id,
+                raw_text,
+                reply_to_message_id=reply_to_message_id,
+                channel_name=channel_name,
+                message_date=message_date,
             )
             return None
 
@@ -181,6 +198,28 @@ class SignalProcessor:
                 symbol_exists=symbol_exists,
                 open_positions=open_positions,
             )
+        if self._repository.get_setup(channel_id, message_id) is not None:
+            self._repository.update_message(
+                channel_id,
+                message_id,
+                previous_text=existing.raw_text,
+                raw_text=raw_text,
+                is_edited=True,
+                status=MessageStatus.EDITED_AFTER_EXECUTE.value,
+            )
+            self._record_loop(
+                headline="Edited setup",
+                snippet=raw_text,
+                steps=[
+                    LoopStep("Telegram", "Edit received", f"Message {message_id} changed.", "warn"),
+                    LoopStep("Parser", "Skipped", "This setup already exists.", "warn"),
+                    LoopStep("Check", "Locked", "Edits do not open another setup.", "warn"),
+                    LoopStep("Action", "No MetaTrader order was sent.", "", "idle"),
+                ],
+                outcome="This Telegram setup already exists. No second pair of trades.",
+                kind="warn",
+            )
+            return None
         if message_already_executed(self._repository, channel_id, message_id):
             self._repository.update_message(
                 channel_id,
@@ -314,7 +353,13 @@ class SignalProcessor:
             signal.rejection_reason = parsed.rejection_reason
             self._repository.save_signal(signal)
             self._repository.update_message(
-                channel_id, message_id, status=MessageStatus.INVALID.value
+                channel_id, message_id, status=MessageStatus.PARSE_FAILED.value
+            )
+            self._repository.add_event(
+                "PARSE_FAILED",
+                level="WARNING",
+                category="parser",
+                details={"channel_id": channel_id, "message_id": message_id},
             )
             self._record_loop(
                 headline=self._headline(signal),
@@ -351,7 +396,20 @@ class SignalProcessor:
             )
             if part
         )
-        semantic = find_semantic_duplicates(self._repository, signal, self._rules)
+        if self._repository.get_setup(channel_id, message_id) is not None:
+            self._record_loop(
+                headline=self._headline(signal),
+                snippet=raw_text,
+                steps=[
+                    telegram_step,
+                    LoopStep("Parser", "Skipped", "This Telegram message already has a setup.", "warn"),
+                    LoopStep("Check", "Duplicate post", "Not a new setup.", "warn"),
+                    LoopStep("Action", "No MetaTrader order was sent.", "", "idle"),
+                ],
+                outcome="This Telegram post was already handled. No second order.",
+                kind="warn",
+            )
+            return None
         result = validate_signal(
             signal,
             self._rules,
@@ -363,23 +421,19 @@ class SignalProcessor:
             already_executed=message_already_executed(
                 self._repository, channel_id, message_id
             ),
-            semantic_duplicate=bool(semantic),
+            semantic_duplicate=False,
         )
         signal.validation_status = result.status
         signal.rejection_reason = result.reason_text
         if result.ok:
-            applied = self._execution.apply(signal)
-            signal.execution_status = applied.status
-            action_text = applied.detail
-            order_sent = applied.order_sent
-            status = _message_status(applied.status)
-            check_kind: StatusKind = "ok"
-            action_kind: StatusKind = "ok" if order_sent else (
-                "bad" if applied.status is ExecutionStatus.FAILED else "warn"
-            )
-            loop_kind: StatusKind = "ok" if order_sent else (
-                "bad" if applied.status is ExecutionStatus.FAILED else "warn"
-            )
+            self._store_waiting_setup(signal)
+            signal.execution_status = self._waiting_execution_status()
+            action_text = self._waiting_action_text()
+            order_sent = False
+            status = MessageStatus.WAITING_ENTRY
+            check_kind = "ok"
+            action_kind = "warn"
+            loop_kind = "warn"
         elif result.status is ValidationStatus.SEMANTIC_DUPLICATE:
             signal.execution_status = ExecutionStatus.WAITING_APPROVAL
             status = MessageStatus.SEMANTIC_DUPLICATE
@@ -390,12 +444,19 @@ class SignalProcessor:
             loop_kind = "warn"
         else:
             signal.execution_status = ExecutionStatus.NONE
-            status = MessageStatus.REJECTED
+            status = MessageStatus.PARSE_FAILED if _is_parse_gap(result.reason_text) else MessageStatus.REJECTED
             check_kind = "bad"
             action_text = "No MetaTrader order was sent."
             order_sent = False
             action_kind = "idle"
             loop_kind = "bad"
+            if status is MessageStatus.PARSE_FAILED:
+                self._repository.add_event(
+                    "PARSE_FAILED",
+                    level="WARNING",
+                    category="parser",
+                    details={"channel_id": channel_id, "message_id": message_id, "reason": result.reason_text},
+                )
         self._repository.save_signal(signal)
         self._repository.update_message(channel_id, message_id, status=status.value)
         reason = signal.rejection_reason or describe_validation(result.status)
@@ -428,6 +489,141 @@ class SignalProcessor:
         )
         return signal
 
+    def handle_close_setup(
+        self,
+        channel_id: int,
+        message_id: int,
+        raw_text: str,
+        *,
+        reply_to_message_id: int | None,
+        channel_name: str | None = None,
+        message_date: datetime | None = None,
+    ) -> None:
+        if message_already_processed(self._repository, channel_id, message_id):
+            return
+        self._repository.save_message(
+            channel_id,
+            message_id,
+            raw_text,
+            channel_name=channel_name,
+            message_date=message_date,
+            status=MessageStatus.RECEIVED.value,
+        )
+        if self._setup_manager is not None:
+            outcome = self._setup_manager.request_close(channel_id, reply_to_message_id)
+        else:
+            outcome = self._close_without_broker(channel_id, reply_to_message_id)
+        kind: StatusKind = "warn" if outcome == "UNKNOWN_CLOSE_SETUP" else "ok"
+        self._record_loop(
+            headline="Close setup",
+            snippet=raw_text,
+            steps=[
+                LoopStep("Telegram", "Reply", f"Reply to {reply_to_message_id}.", kind),
+                LoopStep("Parser", "Close setup", "Matched by reply only.", kind),
+                LoopStep("Check", outcome, "No other setup is touched.", kind),
+                LoopStep("Action", outcome, "Only the replied setup is closed or cancelled.", kind),
+            ],
+            outcome=outcome,
+            kind=kind,
+        )
+
+    def _close_without_broker(self, channel_id: int, reply_to_message_id: int | None) -> str:
+        if reply_to_message_id is None:
+            self._repository.add_event(
+                "UNKNOWN_CLOSE_SETUP",
+                level="WARNING",
+                category="telegram",
+                details={"channel_id": channel_id},
+            )
+            return "UNKNOWN_CLOSE_SETUP"
+        setup = self._repository.get_setup(channel_id, reply_to_message_id)
+        if setup is None:
+            self._repository.add_event(
+                "UNKNOWN_CLOSE_SETUP",
+                level="WARNING",
+                category="telegram",
+                details={
+                    "channel_id": channel_id,
+                    "reply_to_message_id": reply_to_message_id,
+                },
+            )
+            return "UNKNOWN_CLOSE_SETUP"
+        if (
+            setup.state is SetupState.WAITING_ENTRY
+            and setup.trade_1_ticket is None
+            and setup.trade_2_ticket is None
+        ):
+            setup.state = SetupState.CANCELLED
+            setup.closed_at = utc_now()
+            self._repository.save_setup(setup)
+            return SetupState.CANCELLED.value
+        setup.close_requested = True
+        self._repository.save_setup(setup)
+        return setup.state.value
+
+    def _store_waiting_setup(self, signal: TradeSignal) -> None:
+        if (
+            signal.telegram_channel_id is None
+            or signal.telegram_message_id is None
+            or signal.direction is None
+            or signal.entry_low is None
+            or signal.entry_high is None
+            or signal.stop_loss is None
+            or len(signal.take_profits) < 2
+            or not (signal.normalized_symbol or signal.symbol)
+        ):
+            return
+        channel_id = signal.telegram_channel_id
+        message_id = signal.telegram_message_id
+        direction = signal.direction
+        symbol = signal.normalized_symbol or signal.symbol or ""
+        setup = Setup(
+            setup_id=f"{channel_id}:{message_id}",
+            telegram_channel_id=channel_id,
+            telegram_message_id=message_id,
+            symbol=symbol,
+            broker_symbol=signal.broker_symbol,
+            direction=direction,
+            entry_min=signal.entry_low,
+            entry_max=signal.entry_high,
+            stop_loss=signal.stop_loss,
+            tp1=signal.take_profits[0],
+            tp2=signal.take_profits[1],
+            tp3=signal.take_profits[2] if len(signal.take_profits) > 2 else None,
+            state=SetupState.WAITING_ENTRY,
+            raw_message=signal.raw_message,
+        )
+        self._repository.save_setup(setup)
+
+    def _waiting_execution_status(self) -> ExecutionStatus:
+        decided = self._execution.decide(
+            TradeSignal(validation_status=ValidationStatus.PARSED)
+        )
+        if decided is ExecutionStatus.EXECUTING:
+            return ExecutionStatus.NONE
+        return decided
+
+    def _waiting_action_text(self) -> str:
+        mode = self._settings.execution_mode
+        if mode is ExecutionMode.OBSERVE:
+            return (
+                "Waiting for the entry zone. Stored only. Mode is Watch only. "
+                "No MetaTrader order was sent."
+            )
+        if mode is ExecutionMode.APPROVAL:
+            return (
+                "Waiting for the entry zone. Held for review. No MetaTrader order was sent."
+            )
+        if mode is ExecutionMode.AUTO_DEMO and self._settings.dry_run:
+            return (
+                "Waiting for the entry zone. Auto on demo is selected, but Keep orders off is on. "
+                "No MetaTrader order was sent."
+            )
+        if mode is ExecutionMode.AUTO_DEMO:
+            return "Waiting for the entry zone. No MetaTrader order was sent."
+        never: ExecutionMode = mode
+        raise ValueError(f"Unhandled execution mode: {never}")
+
     def _headline(self, signal: TradeSignal) -> str:
         symbol = signal.broker_symbol or signal.normalized_symbol or signal.symbol or "Signal"
         direction = signal.direction.value if signal.direction else ""
@@ -455,24 +651,17 @@ class SignalProcessor:
         )
 
 
-def _message_status(execution: ExecutionStatus) -> MessageStatus:
-    if execution is ExecutionStatus.WAITING_APPROVAL:
-        return MessageStatus.WAITING_APPROVAL
-    if execution is ExecutionStatus.EXECUTED:
-        return MessageStatus.EXECUTED
-    if execution is ExecutionStatus.FAILED:
-        return MessageStatus.FAILED
-    if execution is ExecutionStatus.EXECUTING:
-        return MessageStatus.EXECUTING
-    if execution is ExecutionStatus.REJECTED:
-        return MessageStatus.REJECTED
-    if execution is ExecutionStatus.APPROVED:
-        return MessageStatus.APPROVED
-    if execution is ExecutionStatus.NONE:
-        return MessageStatus.PARSED
-    if execution is ExecutionStatus.OBSERVED:
-        return MessageStatus.PARSED
-    if execution is ExecutionStatus.DRY_RUN:
-        return MessageStatus.PARSED
-    never: ExecutionStatus = execution
-    raise ValueError(f"Unhandled execution status: {never}")
+def _is_parse_gap(reason: str | None) -> bool:
+    if not reason:
+        return False
+    markers = (
+        "Entry zone is required",
+        "TP1 and TP2 are required",
+        "Stop loss is required",
+        "Direction is missing",
+        "Symbol is missing",
+        "Take profit",
+        "Malformed",
+    )
+    return any(item in reason for item in markers)
+

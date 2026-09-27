@@ -6,28 +6,32 @@ from app.database.models import TradeSignalRecord
 from app.database.repository import Repository
 from app.trading.models import MessageStatus
 from app.trading.processor import SignalProcessor
-from tests.fixtures import EXAMPLE_A, EXAMPLE_C
+from tests.fixtures import EXAMPLE_A, EXAMPLE_C, ZONE_BUY
 
 
 def test_same_telegram_message_not_processed_twice(
     processor: SignalProcessor, repository: Repository
 ) -> None:
-    first = processor.handle_new_message(1001, 82911, EXAMPLE_A)
-    second = processor.handle_new_message(1001, 82911, EXAMPLE_A)
+    first = processor.handle_new_message(1001, 82911, ZONE_BUY)
+    second = processor.handle_new_message(1001, 82911, ZONE_BUY)
     assert first is not None
     assert second is None
     stored = repository.get_message(1001, 82911)
     assert stored is not None
-    assert stored.status == MessageStatus.PARSED.value
+    assert stored.status == MessageStatus.WAITING_ENTRY.value
+    assert repository.get_setup(1001, 82911) is not None
 
 
-def test_semantic_duplicate_requires_review(processor: SignalProcessor) -> None:
-    first = processor.handle_new_message(1001, 10, EXAMPLE_C)
-    second = processor.handle_new_message(1001, 11, EXAMPLE_C)
+def test_same_prices_are_separate_setups(
+    processor: SignalProcessor, repository: Repository
+) -> None:
+    first = processor.handle_new_message(1001, 10, ZONE_BUY)
+    second = processor.handle_new_message(1001, 11, ZONE_BUY)
     assert first is not None
     assert second is not None
-    assert second.validation_status.value == "SEMANTIC_DUPLICATE"
-    assert second.execution_status.value == "WAITING_APPROVAL"
+    assert second.validation_status.value == "PARSED"
+    assert repository.get_setup(1001, 10) is not None
+    assert repository.get_setup(1001, 11) is not None
 
 
 def test_unauthorized_channel_ignored(

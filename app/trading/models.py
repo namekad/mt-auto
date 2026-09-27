@@ -43,10 +43,33 @@ class ExecutionStatus(str, Enum):
     DRY_RUN = "DRY_RUN"
 
 
+class SetupState(str, Enum):
+    RECEIVED = "RECEIVED"
+    WAITING_ENTRY = "WAITING_ENTRY"
+    ACTIVE = "ACTIVE"
+    BREAK_EVEN = "BREAK_EVEN"
+    PARTIALLY_CLOSED = "PARTIALLY_CLOSED"
+    CLOSED = "CLOSED"
+    CLOSED_BY_SIGNAL = "CLOSED_BY_SIGNAL"
+    CANCELLED = "CANCELLED"
+    ERROR = "ERROR"
+
+
+FINAL_SETUP_STATES = frozenset(
+    {
+        SetupState.CLOSED,
+        SetupState.CLOSED_BY_SIGNAL,
+        SetupState.CANCELLED,
+    }
+)
+
+
 class MessageStatus(str, Enum):
     RECEIVED = "RECEIVED"
     IGNORED = "IGNORED"
     PARSED = "PARSED"
+    PARSE_FAILED = "PARSE_FAILED"
+    WAITING_ENTRY = "WAITING_ENTRY"
     INVALID = "INVALID"
     WAITING_APPROVAL = "WAITING_APPROVAL"
     REJECTED = "REJECTED"
@@ -103,6 +126,37 @@ class TradeSignal(BaseModel):
                 return self.take_profits[index]
             return None
         return self.take_profits[-1]
+
+
+class Setup(BaseModel):
+    setup_id: str
+    telegram_channel_id: int
+    telegram_message_id: int
+    symbol: str
+    broker_symbol: str | None = None
+    direction: Direction
+    entry_min: float
+    entry_max: float
+    stop_loss: float
+    tp1: float
+    tp2: float
+    tp3: float | None = None
+    state: SetupState = SetupState.WAITING_ENTRY
+    trade_1_ticket: int | None = None
+    trade_2_ticket: int | None = None
+    break_even_applied: bool = False
+    close_requested: bool = False
+    raw_message: str = ""
+    created_at: datetime = Field(default_factory=utc_now)
+    executed_at: datetime | None = None
+    closed_at: datetime | None = None
+
+    def leg_comment(self, leg: int) -> str:
+        if leg == 1:
+            return f"TG_{self.telegram_message_id}_TP1"
+        if leg == 2:
+            return f"TG_{self.telegram_message_id}_TP2"
+        raise ValueError(f"Unhandled setup leg: {leg}")
 
 
 class ValidationResult(BaseModel):

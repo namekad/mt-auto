@@ -34,8 +34,15 @@ hiddenimports = [
     "app.gui",
     "app.gui.app",
     "app.gui.theme",
-    "customtkinter",
-    "darkdetect",
+    "app.gui.feed",
+    "app.gui.channels_store",
+    "app.gui.prefs",
+    "app.telegram.channels",
+    "app.runtime_host",
+    "multiprocessing",
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
     "MetaTrader5",
     "telethon",
     "telegram",
@@ -49,7 +56,7 @@ hiddenimports = [
     "httpx",
 ]
 
-for package in ("customtkinter", "telethon", "telegram", "tzdata", "MetaTrader5"):
+for package in ("telethon", "telegram", "tzdata", "MetaTrader5"):
     collected_datas, collected_binaries, collected_hidden = collect_all(package)
     datas += collected_datas
     binaries += collected_binaries

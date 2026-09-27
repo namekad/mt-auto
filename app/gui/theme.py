@@ -1,78 +1,220 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+BG = "#0B1020"
+SURFACE = "#12182A"
+CARD = "#1B2436"
+BORDER = "#31415C"
+TEXT = "#F7F9FC"
+MUTED = "#A8B3C7"
+BLUE = "#5B9DFF"
+BLUE_HOVER = "#3D84F0"
+GREEN = "#3DDC97"
+AMBER = "#FFC857"
+RED = "#FF5D73"
+YELLOW_TEXT = "#1A1408"
+INK = "#06281C"
 
-import customtkinter as ctk
-
-StatusKind = Literal["idle", "ok", "warn", "bad"]
-
-BG = "#12121C"
-SURFACE = "#1A1A2E"
-CARD = "#22223B"
-CARD_ALT = "#1C1C30"
-BORDER = "#2E3150"
-TEXT = "#F5F5F5"
-MUTED = "#94A3B8"
-TEAL = "#21918C"
-TEAL_HOVER = "#1A7A76"
-YELLOW = "#FDE725"
-YELLOW_HOVER = "#E6D21F"
-YELLOW_TEXT = "#0F172A"
-RED = "#C45C5C"
-RED_HOVER = "#A84C4C"
-GREEN = "#34D399"
-AMBER = "#FBBF24"
-LISTENER_LABELS = {
-    "USER": "My Telegram account",
-    "BOT": "A channel bot",
-}
-LISTENER_VALUES = {label: value for value, label in LISTENER_LABELS.items()}
-
-EXECUTION_LABELS = {
-    "OBSERVE": "Watch only",
-    "APPROVAL": "Wait for approval",
-    "AUTO_DEMO": "Auto on demo",
-}
-EXECUTION_VALUES = {label: value for value, label in EXECUTION_LABELS.items()}
-
-
-def font(size: int, weight: str = "normal") -> ctk.CTkFont:
-    return ctk.CTkFont(family="Segoe UI", size=size, weight=weight)
-
-
-def apply_system_font(widget: Any, size: int | None = None, weight: str | None = None) -> None:
-    font_obj = getattr(widget, "_font", None)
-    resolved_size = 13
-    resolved_weight = "normal"
-    if isinstance(font_obj, ctk.CTkFont):
-        resolved_size = abs(int(font_obj.cget("size")))
-        resolved_weight = str(font_obj.cget("weight") or "normal")
-    if size is not None:
-        resolved_size = size
-    if weight is not None:
-        resolved_weight = weight
-    if resolved_weight not in {"normal", "bold"}:
-        resolved_weight = "bold" if "bold" in resolved_weight else "normal"
-    for attr in ("_label", "_text_label"):
-        inner = getattr(widget, attr, None)
-        if inner is not None:
-            inner.configure(font=("Segoe UI", resolved_size, resolved_weight))
-
-
-def retune_fonts(widget: Any) -> None:
-    apply_system_font(widget)
-    for child in widget.winfo_children():
-        retune_fonts(child)
-
-
-def status_color(kind: StatusKind) -> str:
-    if kind == "ok":
-        return GREEN
-    if kind == "warn":
-        return AMBER
-    if kind == "bad":
-        return "#F87171"
-    if kind == "idle":
-        return MUTED
-    never: StatusKind = kind
-    raise ValueError(f"Unhandled status kind: {never}")
+APP_STYLESHEET = f"""
+QWidget {{
+    background: {BG};
+    color: {TEXT};
+    font-family: "Segoe UI";
+    font-size: 13px;
+}}
+QMainWindow, QScrollArea, QAbstractScrollArea {{
+    background: {BG};
+    border: none;
+}}
+QFrame#sidebar {{
+    background: {SURFACE};
+    border-right: 1px solid {BORDER};
+}}
+QFrame#topbar {{
+    background: {SURFACE};
+    border-bottom: 1px solid {BORDER};
+}}
+QFrame#card {{
+    background: {CARD};
+    border: 1px solid {BORDER};
+    border-radius: 12px;
+}}
+QLabel#title {{
+    font-size: 22px;
+    font-weight: 700;
+    background: transparent;
+}}
+QLabel#muted, QLabel#hint {{
+    color: {MUTED};
+    background: transparent;
+}}
+QLabel#section {{
+    font-size: 15px;
+    font-weight: 700;
+    background: transparent;
+}}
+QLabel#pillOff, QLabel#pillOn, QLabel#pillWait, QLabel#chipOff, QLabel#chipOn, QLabel#chipWait, QLabel#chipBad {{
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-weight: 700;
+}}
+QLabel#pillOff, QLabel#chipOff {{
+    color: {MUTED};
+    background: {BG};
+    border: 1px solid {BORDER};
+}}
+QLabel#pillOn, QLabel#chipOn {{
+    color: {GREEN};
+    background: #12352A;
+    border: 1px solid #1F6B4A;
+}}
+QLabel#pillWait, QLabel#chipWait {{
+    color: {AMBER};
+    background: #3A2E12;
+    border: 1px solid #6B5420;
+}}
+QLabel#chipBad {{
+    color: {RED};
+    background: #3A1820;
+    border: 1px solid #7A3040;
+}}
+QLabel#alert {{
+    color: {AMBER};
+    background: transparent;
+}}
+QLabel#banner {{
+    background: transparent;
+}}
+QPushButton {{
+    background: {SURFACE};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 8px 14px;
+}}
+QPushButton:hover {{
+    background: #243044;
+}}
+QPushButton:disabled {{
+    color: {MUTED};
+    background: {BG};
+}}
+QPushButton#pause {{
+    background: #3A2E12;
+    color: {AMBER};
+    border: 1px solid {AMBER};
+    font-weight: 700;
+}}
+QPushButton#pause:hover {{
+    background: #4A3B16;
+}}
+QPushButton#resume {{
+    background: {GREEN};
+    color: {INK};
+    border: none;
+    font-weight: 700;
+}}
+QPushButton#resume:hover {{
+    background: #2EC888;
+}}
+QPushButton#pause:disabled, QPushButton#resume:disabled {{
+    background: {BG};
+    color: {MUTED};
+    border: 1px solid {BORDER};
+}}
+QPushButton#primary {{
+    background: {BLUE};
+    color: white;
+    border: none;
+    font-weight: 700;
+}}
+QPushButton#primary:hover {{
+    background: {BLUE_HOVER};
+}}
+QPushButton#primary:disabled {{
+    background: {BORDER};
+    color: {MUTED};
+}}
+QPushButton#danger {{
+    background: {RED};
+    color: white;
+    border: none;
+    font-weight: 700;
+}}
+QPushButton#danger:hover {{
+    background: #E14B61;
+}}
+QPushButton#nav {{
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-weight: 600;
+}}
+QPushButton#nav:hover {{
+    background: #243044;
+}}
+QPushButton#nav:checked {{
+    background: #1A3358;
+    color: {BLUE};
+}}
+QPushButton#tab:checked {{
+    background: #1A3358;
+    color: {TEXT};
+    border: 1px solid {BLUE};
+}}
+QLineEdit, QPlainTextEdit, QTextEdit {{
+    background: {BG};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    padding: 6px 8px;
+    selection-background-color: #1A3358;
+}}
+QTableWidget {{
+    background: {BG};
+    alternate-background-color: #121A2C;
+    color: {TEXT};
+    gridline-color: {BORDER};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+    selection-background-color: #1A3358;
+    selection-color: {TEXT};
+}}
+QHeaderView::section {{
+    background: {SURFACE};
+    color: {MUTED};
+    border: none;
+    border-bottom: 1px solid {BORDER};
+    padding: 8px;
+    font-weight: 600;
+}}
+QCheckBox {{
+    background: transparent;
+    spacing: 8px;
+}}
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+    background: {BG};
+}}
+QCheckBox::indicator:checked {{
+    background: {BLUE};
+    border-color: {BLUE};
+}}
+QScrollBar:vertical {{
+    background: {BG};
+    width: 10px;
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {BORDER};
+    border-radius: 5px;
+    min-height: 24px;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0;
+}}
+"""

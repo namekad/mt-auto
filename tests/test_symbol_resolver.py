@@ -8,7 +8,7 @@ from app.trading.models import TradeSignal, ValidationStatus
 from app.trading.processor import SignalProcessor
 from app.trading.symbol_resolver import BrokerSymbol, resolve_broker_symbol
 from app.utils.health import RuntimeState
-from tests.fixtures import EXAMPLE_A
+from tests.fixtures import ZONE_BUY
 from tests.test_execution import FakeMt5
 
 
@@ -106,12 +106,15 @@ def test_processor_trades_broker_gold_name(
     )
     execution = ExecutionController(settings, rules, mt5, repository)
     processor = SignalProcessor(settings, rules, aliases, repository, state, execution)
-    signal = processor.handle_new_message(1001, 90, EXAMPLE_A)
+    signal = processor.handle_new_message(1001, 90, ZONE_BUY)
     assert signal is not None
     assert signal.broker_symbol == "XAUUSDm"
     assert signal.validation_status is ValidationStatus.PARSED
-    assert signal.execution_status.value == "EXECUTED"
-    assert mt5.sent_symbol == "XAUUSDm"
+    setup = repository.get_setup(1001, 90)
+    assert setup is not None
+    assert setup.broker_symbol == "XAUUSDm"
+    assert setup.state.value == "WAITING_ENTRY"
+    assert mt5.sent_symbol is None
 
 
 def test_rejected_copy_does_not_block_the_real_symbol(
@@ -132,13 +135,13 @@ def test_rejected_copy_does_not_block_the_real_symbol(
         state,
         ExecutionController(settings, rules, empty, repository),
     )
-    first = processor.handle_new_message(1001, 91, EXAMPLE_A)
+    first = processor.handle_new_message(1001, 91, ZONE_BUY)
     assert first is not None
     assert first.validation_status is ValidationStatus.REJECTED
 
     live = CatalogMt5([BrokerSymbol("XAUUSD.", bid=3642.0, ask=3642.4)])
     processor._execution = ExecutionController(settings, rules, live, repository)
-    second = processor.handle_new_message(1001, 92, EXAMPLE_A)
+    second = processor.handle_new_message(1001, 92, ZONE_BUY)
     assert second is not None
     assert second.validation_status is ValidationStatus.PARSED
     assert second.broker_symbol == "XAUUSD."

@@ -37,20 +37,25 @@ DIRECTION_RE = re.compile(r"\b(BUY|SELL)\b")
 SL_RE = re.compile(
     r"(?:STOP\s*LOSS|S\s*\.?\s*L\s*\.?|\bSL\b)\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\.)",
 )
-TP_INDEXED_RE = re.compile(r"\bTP([1-9])\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\.)")
+TP_INDEXED_RE = re.compile(
+    r"\bTP\s*([1-9])\b\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\.)"
+)
 TP_PLAIN_RE = re.compile(
     r"(?:TAKE\s*PROFIT|\bTP\b)\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\.)"
 )
 TP_RE = re.compile(
-    r"(?:TAKE\s*PROFIT|\bTP\b)\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\.)"
+    r"(?:TAKE\s*PROFIT|\bTP\s*[1-9]?\b)\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\.)"
 )
+_ZONE_SEP = r"(?:[-–/]|TO)"
 ENTRY_RE = re.compile(
-    r"\b(?:ENTRY|ENTER)\b\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\.)(?:\s*(?:[-–]|TO)\s*(\d+(?:\.\d+)?)(?!\.))?",
+    rf"\b(?:ENTRY|ENTER)\b\s*[:\-]?\s*(\d+(?:\.\d+)?)(?!\.)(?:\s*{_ZONE_SEP}\s*(\d+(?:\.\d+)?)(?!\.))?",
 )
 ENTRY_TOKEN_RE = re.compile(
-    r"^(\d+(?:\.\d+)?)(?:[-–](\d+(?:\.\d+)?))?$"
+    rf"^(\d+(?:\.\d+)?)(?:{_ZONE_SEP}(\d+(?:\.\d+)?))?$"
 )
-RANGE_RE = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)(?![\w.])")
+RANGE_RE = re.compile(
+    rf"(?<![\w.])(\d+(?:\.\d+)?)\s*{_ZONE_SEP}\s*(\d+(?:\.\d+)?)(?![\w.])"
+)
 VOLUME_RE = re.compile(
     r"(?:VOLUME|SIZE|LOTS?)\s*[:\-]?\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*LOTS?\b",
 )
@@ -111,11 +116,21 @@ def extract_order_type(text: str, direction: Direction | None) -> OrderType:
     return OrderType.MARKET
 
 
+def _zone(first: float, second: float) -> tuple[float, float]:
+    if first <= second:
+        return first, second
+    return second, first
+
+
 def extract_entry(text: str) -> tuple[float | None, float | None, float | None, str | None]:
     flat = uppercase_flat(text)
     keyword = ENTRY_KEYWORD_RE.search(flat)
     if keyword:
         remainder = flat[keyword.end() :].strip().lstrip(":-").strip()
+        ranged = RANGE_RE.match(remainder)
+        if ranged:
+            low, high = _zone(float(ranged.group(1)), float(ranged.group(2)))
+            return None, low, high, None
         token = remainder.split()[0] if remainder else ""
         parsed = ENTRY_TOKEN_RE.fullmatch(token)
         if parsed is None:
@@ -123,18 +138,21 @@ def extract_entry(text: str) -> tuple[float | None, float | None, float | None, 
         first = float(parsed.group(1))
         second = parsed.group(2)
         if second:
-            return None, first, float(second), None
+            low, high = _zone(first, float(second))
+            return None, low, high, None
         return first, None, None, None
     labeled = ENTRY_RE.search(flat)
     if labeled:
         first = float(labeled.group(1))
         second = labeled.group(2)
         if second:
-            return None, first, float(second), None
+            low, high = _zone(first, float(second))
+            return None, low, high, None
         return first, None, None, None
     range_match = RANGE_RE.search(flat)
     if range_match:
-        return None, float(range_match.group(1)), float(range_match.group(2)), None
+        low, high = _zone(float(range_match.group(1)), float(range_match.group(2)))
+        return None, low, high, None
     return None, None, None, None
 
 
@@ -150,9 +168,19 @@ def extract_stop_loss(text: str) -> tuple[float | None, str | None]:
 
 def extract_take_profits(text: str) -> tuple[list[float], str | None]:
     flat = uppercase_flat(text)
-    indexed = TP_INDEXED_RE.findall(flat)
+    indexed = list(TP_INDEXED_RE.finditer(flat))
     if indexed:
-        return [float(price) for _index, price in indexed], None
+        ordered = sorted(indexed, key=lambda match: int(match.group(1)))
+        spans = [(match.start(), match.end()) for match in ordered]
+        values = [float(match.group(2)) for match in ordered]
+        for plain in TP_PLAIN_RE.finditer(flat):
+            overlaps = any(
+                not (plain.end() <= start or plain.start() >= end) for start, end in spans
+            )
+            if overlaps:
+                continue
+            values.append(float(plain.group(1)))
+        return values, None
     plains = TP_PLAIN_RE.findall(flat)
     if plains:
         return [float(price) for price in plains], None

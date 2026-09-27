@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.parser.detector import detect_signal
+from app.parser.detector import detect_signal, is_close_setup
 from app.parser.parser import parse_signal
 from app.trading.models import Direction, OrderType
 from tests.fixtures import (
@@ -19,6 +19,8 @@ from tests.fixtures import (
     UPPERCASE,
     VOLUME_SIGNAL,
     WHITESPACE,
+    ZONE_BUY,
+    ZONE_SELL,
 )
 
 
@@ -107,6 +109,49 @@ def test_volume_extracted(aliases: dict[str, str]) -> None:
     result = parse_signal(VOLUME_SIGNAL, aliases)
     assert result.signal is not None
     assert result.signal.volume == 0.02
+
+
+def test_zone_slash_is_ordered(aliases: dict[str, str]) -> None:
+    result = parse_signal(ZONE_BUY, aliases)
+    assert result.is_signal
+    assert result.rejection_reason is None
+    assert result.signal is not None
+    assert result.signal.normalized_symbol == "XAUUSD"
+    assert result.signal.direction is Direction.BUY
+    assert result.signal.entry_low == 4322
+    assert result.signal.entry_high == 4323
+    assert result.signal.take_profits == [4340.0, 4345.0, 4350.0]
+    assert result.signal.stop_loss == 4315
+
+
+def test_reversed_zone_and_sell(aliases: dict[str, str]) -> None:
+    result = parse_signal(ZONE_SELL, aliases)
+    assert result.signal is not None
+    assert result.signal.direction is Direction.SELL
+    assert result.signal.entry_low == 4322
+    assert result.signal.entry_high == 4323
+    assert result.signal.take_profits == [4305.0, 4300.0, 4295.0]
+
+
+def test_flexible_tp_labels(aliases: dict[str, str]) -> None:
+    body = """Gold Buy 4322 / 4323
+TP1 4340
+TP 1: 4345
+SL: 4315
+"""
+    result = parse_signal(body, aliases)
+    assert result.signal is not None
+    assert result.rejection_reason is None
+    assert result.signal.entry_low == 4322
+    assert result.signal.entry_high == 4323
+    assert result.signal.take_profits == [4340.0, 4345.0]
+    assert result.signal.stop_loss == 4315
+
+
+def test_close_setup_phrase() -> None:
+    assert is_close_setup("close setup")
+    assert is_close_setup("  CLOSE   SETUP ")
+    assert is_close_setup("close setup now") is False
 
 
 def test_detector_rejects_chatter(aliases: dict[str, str]) -> None:

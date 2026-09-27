@@ -10,11 +10,19 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database.models import (
     ApplicationEvent,
     ExecutedTrade,
+    SetupRecord,
     TelegramMessage,
     TradeAttempt,
     TradeSignalRecord,
 )
-from app.trading.models import MessageStatus, TradeSignal
+from app.trading.models import (
+    FINAL_SETUP_STATES,
+    Direction,
+    MessageStatus,
+    Setup,
+    SetupState,
+    TradeSignal,
+)
 from app.utils.time import utc_now
 
 
@@ -288,7 +296,103 @@ class Repository:
             statement = select(TradeAttempt).where(TradeAttempt.status == "OPEN")
             return len(list(session.scalars(statement)))
 
+    def save_setup(self, setup: Setup) -> Setup:
+        with self._session_factory() as session:
+            statement = select(SetupRecord).where(SetupRecord.setup_id == setup.setup_id)
+            record = session.scalars(statement).first()
+            if record is None:
+                record = SetupRecord(setup_id=setup.setup_id)
+                session.add(record)
+            _write_setup(record, setup)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = self.get_setup(setup.telegram_channel_id, setup.telegram_message_id)
+                if existing is None:
+                    raise
+                return existing
+            session.refresh(record)
+            return _read_setup(record)
+
+    def get_setup(self, channel_id: int, message_id: int) -> Setup | None:
+        with self._session_factory() as session:
+            statement = select(SetupRecord).where(
+                SetupRecord.telegram_channel_id == channel_id,
+                SetupRecord.telegram_message_id == message_id,
+            )
+            record = session.scalars(statement).first()
+            if record is None:
+                return None
+            return _read_setup(record)
+
+    def list_open_setups(self) -> list[Setup]:
+        finished = {item.value for item in FINAL_SETUP_STATES}
+        with self._session_factory() as session:
+            statement = select(SetupRecord).where(SetupRecord.state.notin_(finished))
+            return [_read_setup(record) for record in session.scalars(statement)]
+
+    def list_recent_setups(self, limit: int = 200) -> list[Setup]:
+        with self._session_factory() as session:
+            statement = (
+                select(SetupRecord)
+                .order_by(SetupRecord.updated_at.desc(), SetupRecord.id.desc())
+                .limit(limit)
+            )
+            return [_read_setup(record) for record in session.scalars(statement)]
+
     def list_executed(self, limit: int = 10) -> list[ExecutedTrade]:
         with self._session_factory() as session:
             statement = select(ExecutedTrade).order_by(ExecutedTrade.id.desc()).limit(limit)
             return list(session.scalars(statement))
+
+
+def _write_setup(record: SetupRecord, setup: Setup) -> None:
+    record.setup_id = setup.setup_id
+    record.telegram_channel_id = setup.telegram_channel_id
+    record.telegram_message_id = setup.telegram_message_id
+    record.symbol = setup.symbol
+    record.broker_symbol = setup.broker_symbol
+    record.direction = setup.direction.value
+    record.entry_min = setup.entry_min
+    record.entry_max = setup.entry_max
+    record.stop_loss = setup.stop_loss
+    record.tp1 = setup.tp1
+    record.tp2 = setup.tp2
+    record.tp3 = setup.tp3
+    record.state = setup.state.value
+    record.trade_1_ticket = setup.trade_1_ticket
+    record.trade_2_ticket = setup.trade_2_ticket
+    record.break_even_applied = setup.break_even_applied
+    record.close_requested = setup.close_requested
+    record.raw_message = setup.raw_message
+    record.created_at = setup.created_at
+    record.executed_at = setup.executed_at
+    record.closed_at = setup.closed_at
+    record.updated_at = utc_now()
+
+
+def _read_setup(record: SetupRecord) -> Setup:
+    return Setup(
+        setup_id=record.setup_id,
+        telegram_channel_id=record.telegram_channel_id,
+        telegram_message_id=record.telegram_message_id,
+        symbol=record.symbol,
+        broker_symbol=record.broker_symbol,
+        direction=Direction(record.direction),
+        entry_min=record.entry_min,
+        entry_max=record.entry_max,
+        stop_loss=record.stop_loss,
+        tp1=record.tp1,
+        tp2=record.tp2,
+        tp3=record.tp3,
+        state=SetupState(record.state),
+        trade_1_ticket=record.trade_1_ticket,
+        trade_2_ticket=record.trade_2_ticket,
+        break_even_applied=bool(record.break_even_applied),
+        close_requested=bool(record.close_requested),
+        raw_message=record.raw_message or "",
+        created_at=record.created_at,
+        executed_at=record.executed_at,
+        closed_at=record.closed_at,
+    )

@@ -65,7 +65,7 @@ class ExecutionController:
             signal.symbol,
             signal.normalized_symbol,
             catalog,
-            price_hint=signal.entry_price,
+            price_hint=_price_hint(signal),
         )
         if match is None:
             logger.info(
@@ -224,3 +224,11 @@ class ExecutionController:
             status=status,
             error_text=error_text,
         )
+
+
+def _price_hint(signal: TradeSignal) -> float | None:
+    if signal.entry_price is not None:
+        return signal.entry_price
+    if signal.entry_low is not None and signal.entry_high is not None:
+        return (signal.entry_low + signal.entry_high) / 2
+    return None

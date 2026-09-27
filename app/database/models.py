@@ -108,6 +108,41 @@ class ExecutedTrade(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class SetupRecord(Base):
+    __tablename__ = "setups"
+    __table_args__ = (
+        UniqueConstraint(
+            "telegram_channel_id",
+            "telegram_message_id",
+            name="uq_setup_channel_message",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    setup_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    telegram_channel_id: Mapped[int] = mapped_column(Integer, index=True)
+    telegram_message_id: Mapped[int] = mapped_column(Integer, index=True)
+    symbol: Mapped[str] = mapped_column(String(64))
+    broker_symbol: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    direction: Mapped[str] = mapped_column(String(16))
+    entry_min: Mapped[float] = mapped_column(Float)
+    entry_max: Mapped[float] = mapped_column(Float)
+    stop_loss: Mapped[float] = mapped_column(Float)
+    tp1: Mapped[float] = mapped_column(Float)
+    tp2: Mapped[float] = mapped_column(Float)
+    tp3: Mapped[float | None] = mapped_column(Float, nullable=True)
+    state: Mapped[str] = mapped_column(String(32), default="WAITING_ENTRY", index=True)
+    trade_1_ticket: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trade_2_ticket: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    break_even_applied: Mapped[bool] = mapped_column(default=False)
+    close_requested: Mapped[bool] = mapped_column(default=False)
+    raw_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class ApplicationEvent(Base):
     __tablename__ = "application_events"
 

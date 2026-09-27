@@ -7,7 +7,7 @@ from collections.abc import Callable
 from queue import Queue
 from typing import Any
 
-from app.config import load_settings, load_symbol_aliases, load_trading_rules
+from app.config import TelegramListenerMode, load_settings, load_symbol_aliases, load_trading_rules
 from app.database.repository import Repository
 from app.database.session import (
     create_db_engine,
@@ -18,10 +18,12 @@ from app.database.session import (
 from app.exceptions import LiveModeDisabledError, Mt5AccountMismatchError, Mt5ServiceError
 from app.notifications.telegram_notifier import TelegramNotifier
 from app.services.mt5_service import Mt5Service
+from app.telegram.channels import fetch_joined_channels
 from app.telegram.control_bot import ControlBot
 from app.telegram.listener import TelegramListener
 from app.trading.execution_controller import ExecutionController
 from app.trading.processor import SignalProcessor
+from app.trading.setup_manager import SetupManager
 from app.utils.health import RuntimeState
 from app.paths import ensure_runtime_files
 from app.utils.logging import setup_logging
@@ -58,6 +60,7 @@ class AutomationRuntime:
     def start(self) -> None:
         if self._running:
             return
+        self._running = True
         self._thread = threading.Thread(target=self._thread_main, daemon=True)
         self._thread.start()
 
@@ -79,6 +82,23 @@ class AutomationRuntime:
         self.state.processing_active = True
         logger.info("Signal processing resumed from UI")
 
+    def list_joined_channels(self) -> list[tuple[int, str]]:
+        settings = load_settings()
+        mode = settings.telegram_listener_mode
+        if mode is TelegramListenerMode.BOT:
+            raise RuntimeError("Load channels after you sign in with My Telegram account.")
+        if mode is not TelegramListenerMode.USER:
+            never: TelegramListenerMode = mode
+            raise ValueError(f"Unhandled listener mode: {never}")
+        if self._running:
+            loop = self._loop
+            listener = self._listener
+            if loop is None or listener is None:
+                raise RuntimeError("Telegram is still starting. Try again in a moment.")
+            future = asyncio.run_coroutine_threadsafe(listener.list_channels(), loop)
+            return future.result(timeout=45)
+        return asyncio.run(fetch_joined_channels(settings))
+
     def _thread_main(self) -> None:
         ensure_runtime_files()
         setup_logging()
@@ -95,7 +115,10 @@ class AutomationRuntime:
 
     async def _run(self) -> None:
         settings = load_settings()
+        paused = self.state.paused
         self.state = RuntimeState()
+        self.state.paused = paused
+        self.state.processing_active = not paused
         self._running = True
         try:
             settings.assert_not_live()
@@ -118,8 +141,17 @@ class AutomationRuntime:
         _connect_mt5(settings, self.state, mt5_service)
         notifier = TelegramNotifier(settings)
         execution = ExecutionController(settings, rules, mt5_service, repository)
+        setup_manager = SetupManager(
+            settings, rules, repository, mt5_service, self.state
+        )
         processor = SignalProcessor(
-            settings, rules, aliases, repository, self.state, execution
+            settings,
+            rules,
+            aliases,
+            repository,
+            self.state,
+            execution,
+            setup_manager,
         )
         listener = TelegramListener(
             settings,
@@ -146,6 +178,10 @@ class AutomationRuntime:
                     await notifier.mt5_connected()
             if listener.credentials_ready() and self.state.telegram_connected:
                 tasks.append(asyncio.create_task(listener.listen(), name="telegram-listener"))
+            setup_manager.reconcile()
+            tasks.append(
+                asyncio.create_task(self._watch_setups(setup_manager), name="setup-monitor")
+            )
             logger.info("Automation is running")
             tasks.append(asyncio.create_task(self._stop_event.wait(), name="stop-wait"))
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -161,6 +197,19 @@ class AutomationRuntime:
             if settings.has_control_bot_credentials():
                 await notifier.system_stopped()
             logger.info("Automation stopped")
+
+    async def _watch_setups(self, manager: SetupManager) -> None:
+        if self._stop_event is None:
+            return
+        while not self._stop_event.is_set():
+            try:
+                manager.tick()
+            except Exception:
+                logger.exception("Setup monitor failed")
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=1.0)
+            except TimeoutError:
+                continue
 
 
 def _connect_mt5(settings, state: RuntimeState, service: Mt5Service) -> None:

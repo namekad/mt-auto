@@ -1,8 +1,11 @@
 require_stop_loss: true
 require_take_profit: true
-minimum_take_profits: 1
+minimum_take_profits: 2
 maximum_signal_age_seconds: 120
 default_volume: 0.01
+lot_size: 0.01
+positions_per_setup: 2
+break_even_distance: 4.0
 maximum_volume: 0.05
 maximum_open_positions: 3
 allow_market_orders: true

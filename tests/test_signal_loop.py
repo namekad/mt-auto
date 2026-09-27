@@ -1,31 +1,24 @@
 from __future__ import annotations
 
 from app.config import ExecutionMode
-from app.trading.loop import describe_action, describe_validation, format_loop_feed, visual_verdict
+from app.trading.loop import describe_action, describe_validation, visual_verdict
 from app.trading.models import ExecutionStatus, ValidationStatus
 from app.trading.processor import SignalProcessor
-from tests.fixtures import EXAMPLE_A, EXAMPLE_C
+from tests.fixtures import EXAMPLE_A, ZONE_BUY
 
 
-def test_semantic_duplicate_explains_why(processor: SignalProcessor) -> None:
-    processor.handle_new_message(1001, 10, EXAMPLE_C)
-    second = processor.handle_new_message(1001, 11, EXAMPLE_C)
+def test_second_setup_is_not_a_duplicate(processor: SignalProcessor) -> None:
+    processor.handle_new_message(1001, 10, ZONE_BUY)
+    second = processor.handle_new_message(1001, 11, ZONE_BUY)
     assert second is not None
-    assert second.validation_status is ValidationStatus.SEMANTIC_DUPLICATE
-    assert second.rejection_reason is not None
-    assert "already recorded" in second.rejection_reason
-    events = processor._state.loop_events
-    assert events
-    latest = events[0]
+    assert second.validation_status is ValidationStatus.PARSED
+    latest = processor._state.loop_events[0]
     assert latest.order_sent is False
-    assert "already recorded" in latest.outcome
-    assert "NO ORDER" in format_loop_feed(events).upper() or "No MetaTrader order" in format_loop_feed(
-        events
-    )
+    assert "No MetaTrader order" in latest.outcome
 
 
 def test_valid_signal_loop_says_no_order(processor: SignalProcessor) -> None:
-    signal = processor.handle_new_message(1001, 50, EXAMPLE_A)
+    signal = processor.handle_new_message(1001, 50, ZONE_BUY)
     assert signal is not None
     assert signal.validation_status is ValidationStatus.PARSED
     latest = processor._state.loop_events[0]
@@ -57,9 +50,8 @@ def test_describe_action_never_claims_send_in_observe() -> None:
 
 
 def test_visual_verdict_says_did_not_trade(processor: SignalProcessor) -> None:
-    processor.handle_new_message(1001, 10, EXAMPLE_C)
-    processor.handle_new_message(1001, 11, EXAMPLE_C)
+    processor.handle_new_message(1001, 50, ZONE_BUY)
     title, why, kind = visual_verdict(processor._state.loop_events[0])
     assert "Did not trade" in title
-    assert "already" in why.lower()
+    assert "watch only" in why.lower() or "no metatrader order" in why.lower()
     assert kind == "warn"

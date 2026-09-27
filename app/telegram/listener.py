@@ -17,6 +17,7 @@ from telethon import TelegramClient, events
 from telethon.errors import PhoneNumberInvalidError
 
 from app.config import PROJECT_ROOT, Settings, TelegramListenerMode
+from app.telegram.channels import collect_channels
 from app.notifications.telegram_notifier import TelegramNotifier
 from app.trading.models import TradeSignal, ValidationStatus
 from app.trading.processor import SignalProcessor
@@ -78,6 +79,11 @@ class TelegramListener:
     async def start(self) -> None:
         await self.connect()
         await self.listen()
+
+    async def list_channels(self) -> list[tuple[int, str]]:
+        if self._user_client is None:
+            raise RuntimeError("Sign in first. Press Start and enter the Telegram code.")
+        return await collect_channels(self._user_client)
 
     async def stop(self) -> None:
         self._state.telegram_listener_active = False
@@ -220,6 +226,7 @@ class TelegramListener:
                 channel_name=post.chat.title,
                 message_date=_as_utc(post.date),
                 is_forwarded=post.forward_origin is not None,
+                reply_to_message_id=_bot_reply_id(post),
             )
             await self._notify_signal(signal)
         except Exception as error:
@@ -273,6 +280,7 @@ class TelegramListener:
                 channel_name=channel_name,
                 message_date=_as_utc(message.date),
                 is_forwarded=bool(message.fwd_from),
+                reply_to_message_id=_telethon_reply_id(message),
             )
             await self._notify_signal(signal)
         except Exception as error:
@@ -332,6 +340,26 @@ def _same_phone(configured: str | None, session_phone: str | None) -> bool:
     if not expected or not actual:
         return True
     return expected == actual or expected.endswith(actual) or actual.endswith(expected)
+
+
+def _bot_reply_id(post: object) -> int | None:
+    reply = getattr(post, "reply_to_message", None)
+    if reply is None:
+        return None
+    message_id = getattr(reply, "message_id", None)
+    if message_id is None:
+        return None
+    return int(message_id)
+
+
+def _telethon_reply_id(message: object) -> int | None:
+    reply = getattr(message, "reply_to", None)
+    if reply is None:
+        return None
+    message_id = getattr(reply, "reply_to_msg_id", None)
+    if message_id is None:
+        return None
+    return int(message_id)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:

@@ -39,9 +39,12 @@ class TakeProfitStrategy(str, Enum):
 class TradingRules(BaseModel):
     require_stop_loss: bool = True
     require_take_profit: bool = True
-    minimum_take_profits: int = 1
+    minimum_take_profits: int = 2
     maximum_signal_age_seconds: int = 120
     default_volume: float = 0.01
+    lot_size: float = 0.01
+    positions_per_setup: int = 2
+    break_even_distance: float = 4.0
     maximum_volume: float = 0.05
     maximum_open_positions: int = 3
     allow_market_orders: bool = True

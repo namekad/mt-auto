@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.parser.extractor import (
     DIRECTION_RE,
     SL_RE,
@@ -9,6 +11,12 @@ from app.parser.extractor import (
     looks_like_ticker,
 )
 from app.parser.normalizer import uppercase_flat
+
+CLOSE_SETUP_RE = re.compile(r"^CLOSE\s+SETUP$")
+
+
+def is_close_setup(text: str) -> bool:
+    return bool(CLOSE_SETUP_RE.fullmatch(uppercase_flat(text)))
 
 
 def detect_signal(text: str, aliases: dict[str, str]) -> bool:

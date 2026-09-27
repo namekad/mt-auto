@@ -9,7 +9,7 @@ from app.trading.execution_controller import ExecutionController
 from app.trading.models import ExecutionStatus, TradeSignal, ValidationStatus
 from app.trading.processor import SignalProcessor
 from app.utils.health import RuntimeState
-from tests.fixtures import EXAMPLE_A
+from tests.fixtures import ZONE_BUY
 
 
 @dataclass
@@ -47,7 +47,7 @@ class FakeMt5:
 
 
 def test_observe_never_sends(processor: SignalProcessor) -> None:
-    signal = processor.handle_new_message(1001, 50, EXAMPLE_A)
+    signal = processor.handle_new_message(1001, 50, ZONE_BUY)
     assert signal is not None
     assert signal.execution_status is ExecutionStatus.OBSERVED
     latest = processor._state.loop_events[0]
@@ -65,7 +65,7 @@ def test_auto_demo_dry_run_does_not_send(
     state = RuntimeState()
     execution = ExecutionController(settings, rules, FakeMt5(), repository)
     processor = SignalProcessor(settings, rules, aliases, repository, state, execution)
-    signal = processor.handle_new_message(1001, 80, EXAMPLE_A)
+    signal = processor.handle_new_message(1001, 80, ZONE_BUY)
     assert signal is not None
     assert signal.execution_status is ExecutionStatus.DRY_RUN
     assert state.loop_events[0].order_sent is False
@@ -83,11 +83,12 @@ def test_auto_demo_sends_when_orders_allowed(
     state = RuntimeState()
     execution = ExecutionController(settings, rules, FakeMt5(), repository)
     processor = SignalProcessor(settings, rules, aliases, repository, state, execution)
-    signal = processor.handle_new_message(1001, 81, EXAMPLE_A)
+    signal = processor.handle_new_message(1001, 81, ZONE_BUY)
     assert signal is not None
-    assert signal.execution_status is ExecutionStatus.EXECUTED
-    assert state.loop_events[0].order_sent is True
-    assert repository.list_executed()
+    assert signal.validation_status is ValidationStatus.PARSED
+    assert state.loop_events[0].order_sent is False
+    assert repository.get_setup(1001, 81) is not None
+    assert repository.get_setup(1001, 81).state.value == "WAITING_ENTRY"
 
 
 def test_auto_demo_fails_without_mt5(
@@ -101,10 +102,11 @@ def test_auto_demo_fails_without_mt5(
     state = RuntimeState()
     execution = ExecutionController(settings, rules, None, repository)
     processor = SignalProcessor(settings, rules, aliases, repository, state, execution)
-    signal = processor.handle_new_message(1001, 82, EXAMPLE_A)
+    signal = processor.handle_new_message(1001, 82, ZONE_BUY)
     assert signal is not None
-    assert signal.execution_status is ExecutionStatus.FAILED
+    assert signal.validation_status is ValidationStatus.PARSED
     assert state.loop_events[0].order_sent is False
+    assert repository.get_setup(1001, 82) is not None
 
 
 def test_decide_observe_on_parsed() -> None:

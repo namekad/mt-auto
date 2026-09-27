@@ -10,10 +10,9 @@ from app.trading.models import (
     ValidationResult,
     ValidationStatus,
 )
-from app.trading.risk import resolve_volume
 from app.trading.symbol_resolver import symbol_allowed
 from app.utils.telegram_ids import is_allowed_channel
-from app.utils.time import age_seconds, utc_now
+from app.utils.time import age_seconds
 
 DUPLICATE_REASON = (
     "Same symbol, direction, entry, stop, and take-profits were already "
@@ -45,43 +44,40 @@ def validate_signal_age(
     return ValidationResult(ok=True, status=ValidationStatus.PARSED)
 
 
-def _price_reference(signal: TradeSignal, market_price: float | None) -> float | None:
-    if signal.entry_price is not None:
-        return signal.entry_price
-    if signal.order_type is OrderType.MARKET:
-        return market_price
-    return None
-
-
-def _direction_price_errors(
-    signal: TradeSignal, reference: float | None
+def _zone_direction_errors(
+    signal: TradeSignal, entry_min: float, entry_max: float
 ) -> list[str]:
-    if signal.direction is None or reference is None:
+    if signal.direction is None:
         return []
     errors: list[str] = []
+    take_profits = signal.take_profits
     if signal.direction is Direction.BUY:
-        if signal.stop_loss is not None and signal.stop_loss >= reference:
+        if signal.stop_loss is not None and signal.stop_loss >= entry_min:
             errors.append(
-                "Direction detected as BUY, but Stop Loss is above entry price."
+                "Direction detected as BUY, but Stop Loss is not below the entry zone."
             )
-        for take_profit in signal.take_profits:
-            if take_profit <= reference:
-                errors.append(
-                    "Direction detected as BUY, but Take Profit is below entry price."
-                )
-                break
+        if take_profits and take_profits[0] <= entry_max:
+            errors.append(
+                "Direction detected as BUY, but TP1 is not above the entry zone."
+            )
+        if len(take_profits) >= 2 and take_profits[1] <= take_profits[0]:
+            errors.append("Direction detected as BUY, but TP2 is not above TP1.")
+        if len(take_profits) >= 3 and take_profits[2] <= take_profits[1]:
+            errors.append("Direction detected as BUY, but TP3 is not above TP2.")
         return errors
     if signal.direction is Direction.SELL:
-        if signal.stop_loss is not None and signal.stop_loss <= reference:
+        if signal.stop_loss is not None and signal.stop_loss <= entry_max:
             errors.append(
-                "Direction detected as SELL, but Stop Loss is below entry price."
+                "Direction detected as SELL, but Stop Loss is not above the entry zone."
             )
-        for take_profit in signal.take_profits:
-            if take_profit >= reference:
-                errors.append(
-                    "Direction detected as SELL, but Take Profit is above entry price."
-                )
-                break
+        if take_profits and take_profits[0] >= entry_min:
+            errors.append(
+                "Direction detected as SELL, but TP1 is not below the entry zone."
+            )
+        if len(take_profits) >= 2 and take_profits[1] >= take_profits[0]:
+            errors.append("Direction detected as SELL, but TP2 is not below TP1.")
+        if len(take_profits) >= 3 and take_profits[2] >= take_profits[1]:
+            errors.append("Direction detected as SELL, but TP3 is not below TP2.")
         return errors
     never: Direction = signal.direction
     raise ValueError(f"Unhandled direction: {never}")
@@ -134,50 +130,36 @@ def validate_signal(
     ):
         reasons.append(f"Symbol {signal.normalized_symbol} is not allowed.")
 
-    if signal.has_entry_range():
-        reasons.append("Entry is a price range; a single entry price is required.")
-
-    if signal.order_type in PENDING_TYPES and signal.entry_price is None:
-        reasons.append("Entry price is required for pending orders.")
+    if not signal.has_entry_range():
+        reasons.append("Entry zone is required.")
+    else:
+        entry_min = min(signal.entry_low or 0.0, signal.entry_high or 0.0)
+        entry_max = max(signal.entry_low or 0.0, signal.entry_high or 0.0)
+        signal.entry_low = entry_min
+        signal.entry_high = entry_max
+        reasons.extend(_zone_direction_errors(signal, entry_min, entry_max))
 
     if rules.require_stop_loss and signal.stop_loss is None:
         reasons.append("Stop loss is required.")
 
-    if rules.require_take_profit and not signal.take_profits:
-        reasons.append("Take profit is required.")
+    if rules.require_take_profit and len(signal.take_profits) < 2:
+        reasons.append("TP1 and TP2 are required.")
     elif len(signal.take_profits) < rules.minimum_take_profits:
         reasons.append(
             f"At least {rules.minimum_take_profits} take-profit level(s) required."
         )
 
-    volume = resolve_volume(signal, rules)
-    if volume <= 0:
+    signal.volume = rules.lot_size
+    if signal.volume <= 0:
         reasons.append("Volume must be greater than zero.")
-    if volume > rules.maximum_volume:
-        reasons.append(
-            f"Volume {volume} exceeds maximum {rules.maximum_volume}."
-        )
-    signal.volume = volume
 
-    if signal.telegram_message_date is not None:
-        age_result = validate_signal_age(
-            signal.telegram_message_date, rules, now or utc_now()
-        )
-        if not age_result.ok:
-            reasons.extend(age_result.reasons)
-
-    reference = _price_reference(signal, market_price)
-    reasons.extend(_direction_price_errors(signal, reference))
+    if any("Direction detected" in item for item in reasons):
+        requires_review = True
 
     if mt5_connected:
         if symbol_exists is False:
             label = signal.symbol or signal.normalized_symbol or "this"
             reasons.append(f"No tradable {label} symbol on this MetaTrader account.")
-        if (
-            open_positions is not None
-            and open_positions >= rules.maximum_open_positions
-        ):
-            reasons.append("Maximum open position limit exceeded.")
     if semantic_duplicate:
         requires_review = True
         reasons.append(DUPLICATE_REASON)

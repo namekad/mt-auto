@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import multiprocessing
 import traceback
+
+multiprocessing.freeze_support()
 
 
 def main() -> None:
