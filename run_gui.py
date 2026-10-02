@@ -26,7 +26,7 @@ def main() -> None:
         try:
             import ctypes
 
-            ctypes.windll.user32.MessageBoxW(0, str(error), "Telegram MT5", 16)
+            ctypes.windll.user32.MessageBoxW(0, str(error), "AUTO-TRADER", 16)
         except Exception:
             raise
 

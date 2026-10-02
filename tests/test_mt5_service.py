@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.config import Settings
+from app.services import mt5_service as mt5_service_module
 from app.services.mt5_service import (
     ORDER_TYPE_BUY,
     TRADE_ACTION_DEAL,
@@ -10,10 +11,13 @@ from app.services.mt5_service import (
     build_demo_order_request,
     build_initialize_attempts,
     describe_initialize_kwargs,
+    authorization_failure_text,
     filling_type,
+    locate_terminal,
     normalize_volume,
     order_action_and_type,
     order_comment,
+    resolve_terminal_path,
 )
 from app.trading.models import Direction, OrderType
 from app.utils.telegram_ids import is_allowed_channel
@@ -122,3 +126,60 @@ def test_initialize_attempts_use_login_and_hide_password() -> None:
     assert "Broker-Demo" in text
     existing = build_initialize_attempts(exe, settings, prefer_existing=True)
     assert "login" not in existing[0]
+    attached = build_initialize_attempts(exe, settings, attach_only=True)
+    assert "login" not in attached[0]
+    assert "password" not in attached[0]
+
+
+def test_locate_terminal_accepts_a_folder_path(tmp_path: Path) -> None:
+    install_dir = tmp_path / "MetaTrader 5"
+    install_dir.mkdir()
+    exe = install_dir / "terminal64.exe"
+    exe.write_text("stub")
+    lookup = locate_terminal(str(install_dir))
+    assert lookup.path == exe
+    assert lookup.configured_invalid is False
+    assert resolve_terminal_path(str(install_dir)) == exe
+
+
+def test_locate_terminal_reports_invalid_configured_path(tmp_path: Path, monkeypatch) -> None:
+    # Force the hard-coded default away so this is deterministic even on a machine
+    # that actually has MetaTrader 5 installed at the default location.
+    monkeypatch.setattr(mt5_service_module, "DEFAULT_TERMINAL", tmp_path / "no-default-here" / "terminal64.exe")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "no-program-files-here"))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.delenv("ProgramW6432", raising=False)
+    bad_path = tmp_path / "WrongFolder" / "terminal64.exe"
+    lookup = locate_terminal(str(bad_path))
+    assert lookup.path is None
+    assert lookup.configured_invalid is True
+    assert str(bad_path) in lookup.checked
+
+
+def test_locate_terminal_autodetects_broker_named_folders(tmp_path: Path, monkeypatch) -> None:
+    program_files = tmp_path / "Program Files"
+    program_files.mkdir()
+    broker_dir = program_files / "Exness MetaTrader 5"
+    broker_dir.mkdir()
+    exe = broker_dir / "terminal64.exe"
+    exe.write_text("stub")
+    # Force the hard-coded default to a path that does not exist on this machine,
+    # so the test exercises the broker-folder scan regardless of what is actually
+    # installed on the host running the suite.
+    monkeypatch.setattr(mt5_service_module, "DEFAULT_TERMINAL", tmp_path / "no-default-here" / "terminal64.exe")
+    monkeypatch.setenv("ProgramFiles", str(program_files))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.delenv("ProgramW6432", raising=False)
+    lookup = locate_terminal(None)
+    assert lookup.path == exe
+    assert lookup.configured_invalid is False
+
+
+def test_authorization_failure_text_uses_the_server_reason() -> None:
+    log = (
+        "DL\t0\t18:52:28.859\tTerminal\tMetaTrader 5 started\n"
+        "LP\t2\t18:52:36.729\tNetwork\t'5055897163': authorization on MetaQuotes-Demo failed (Invalid account)\n"
+    )
+    assert authorization_failure_text(log) == (
+        "'5055897163': authorization on MetaQuotes-Demo failed (Invalid account)"
+    )

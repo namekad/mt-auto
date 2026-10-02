@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import queue
 import threading
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QFont, QFontInfo, QTextCursor
+from PySide6.QtGui import QCloseEvent, QColor, QFont, QFontInfo, QIcon, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -59,7 +60,7 @@ from app.gui.feed import (
 )
 from app.gui.prefs import load_trades_tab, save_trades_tab
 from app.gui.theme import AMBER, APP_STYLESHEET, GREEN, MUTED, RED, TEXT
-from app.paths import ensure_runtime_files, is_frozen
+from app.paths import app_icon_path, ensure_runtime_files, is_frozen
 from app.release_update import PendingApply, ReleaseAsset, ReleaseCheckError, build_label, download_release_update, installed_sha, version_label
 from app.runtime_host import RuntimeHost
 from app.trading.models import Setup, SetupState
@@ -75,6 +76,7 @@ LEVEL_COLORS = {
     "CRITICAL": RED,
 }
 
+APP_NAME = "AUTO-TRADER"
 NAV_PAGES = ("trades", "channels", "setup", "log")
 NAV_LABELS = {"trades": "Trades", "channels": "Channels", "setup": "Setup", "log": "Log"}
 TRADE_COLUMNS = ("Time", "Symbol", "Side", "Zone", "SL", "TP1", "TP2", "State", "Legs")
@@ -396,7 +398,10 @@ class AppWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Telegram → MT5")
+        self.setWindowTitle(APP_NAME)
+        icon = load_app_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
         self.resize(1180, 760)
         self.setMinimumSize(980, 640)
         ensure_runtime_files()
@@ -493,9 +498,20 @@ class AppWindow(QMainWindow):
         side.setFixedWidth(220)
         layout = QVBoxLayout(side)
         layout.setContentsMargins(16, 20, 16, 16)
-        brand = QLabel("Telegram MT5")
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(0, 0, 0, 0)
+        brand_row.setSpacing(10)
+        icon = load_app_icon()
+        if not icon.isNull():
+            mark = QLabel()
+            mark.setObjectName("brandMark")
+            mark.setPixmap(icon.pixmap(28, 28))
+            mark.setFixedSize(28, 28)
+            brand_row.addWidget(mark)
+        brand = QLabel(APP_NAME)
         brand.setObjectName("section")
-        layout.addWidget(brand)
+        brand_row.addWidget(brand, 1)
+        layout.addLayout(brand_row)
         note = QLabel("Demo setups")
         note.setObjectName("muted")
         layout.addWidget(note)
@@ -1410,7 +1426,9 @@ class AppWindow(QMainWindow):
                 extra = f" · {state.mt5_balance:.2f} · {state.open_positions} open"
             return telegram_name, telegram_text, "chipOn", f"MetaTrader · {account}{extra}"
         if state.mt5_installation == "NOT FOUND":
-            return telegram_name, telegram_text, "chipBad", "MetaTrader not found"
+            return telegram_name, telegram_text, "chipBad", "MetaTrader module missing"
+        if state.mt5_last_error:
+            return telegram_name, telegram_text, "chipBad", "MetaTrader error · see log"
         return telegram_name, telegram_text, "chipWait", "MetaTrader connecting"
 
     def _refresh_status(self) -> None:
@@ -1521,9 +1539,28 @@ class AppWindow(QMainWindow):
         event.accept()
 
 
+def load_app_icon() -> QIcon:
+    path = app_icon_path()
+    if not path.is_file():
+        return QIcon()
+    return QIcon(str(path))
+
+
+def _register_windows_app_id() -> None:
+    if os.name != "nt":
+        return
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_NAME)
+
+
 def run_gui() -> None:
+    _register_windows_app_id()
     ensure_runtime_files()
     app = QApplication([])
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
+    icon = load_app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLESHEET)
     window = AppWindow()

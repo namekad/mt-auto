@@ -21,7 +21,7 @@ def render_banner(settings: Settings, state: RuntimeState) -> str:
     return "\n".join(
         [
             "========================================",
-            "Telegram → MT5 Automation",
+            "AUTO-TRADER",
             "=========================",
             "",
             f"Mode: {settings.resolved_app_mode.value}",

@@ -52,6 +52,7 @@ def status_snapshot(worker_running: bool, state: RuntimeState) -> dict[str, Any]
         "listening_channels": channels,
         "mt5_account_verified": bool(state.mt5_account_verified),
         "mt5_installation": state.mt5_installation,
+        "mt5_last_error": state.mt5_last_error,
         "mt5_login": state.mt5_login,
         "mt5_server": state.mt5_server,
         "mt5_balance": state.mt5_balance,
@@ -274,6 +275,8 @@ class RuntimeHost:
         installation = payload.get("mt5_installation")
         if isinstance(installation, str):
             state.mt5_installation = installation
+        mt5_error = payload.get("mt5_last_error")
+        state.mt5_last_error = mt5_error if isinstance(mt5_error, str) else None
         login = payload.get("mt5_login")
         state.mt5_login = int(login) if isinstance(login, int) else None
         server = payload.get("mt5_server")

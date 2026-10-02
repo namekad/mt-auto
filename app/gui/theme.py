@@ -52,6 +52,9 @@ QLabel#section {{
     font-weight: 700;
     background: transparent;
 }}
+QLabel#brandMark {{
+    background: transparent;
+}}
 QLabel#pillOff, QLabel#pillOn, QLabel#pillWait, QLabel#chipOff, QLabel#chipOn, QLabel#chipWait, QLabel#chipBad {{
     border-radius: 10px;
     padding: 4px 10px;

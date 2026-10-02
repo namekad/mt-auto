@@ -17,7 +17,7 @@ from app.database.session import (
 )
 from app.exceptions import LiveModeDisabledError, Mt5AccountMismatchError, Mt5ServiceError
 from app.notifications.telegram_notifier import TelegramNotifier
-from app.services.mt5_service import Mt5Service
+from app.services.mt5_service import Mt5Service, import_error as mt5_import_error
 from app.telegram.channels import fetch_joined_channels
 from app.telegram.control_bot import ControlBot
 from app.telegram.listener import TelegramListener
@@ -215,6 +215,13 @@ class AutomationRuntime:
 def _connect_mt5(settings, state: RuntimeState, service: Mt5Service) -> None:
     if not service.available():
         state.mt5_installation = "NOT FOUND"
+        reason = mt5_import_error() or "the module did not load (no further detail is available)."
+        error = Mt5ServiceError(
+            f"The MetaTrader5 Python package failed to load inside this app: {reason}"
+        )
+        logger.error("%s", error)
+        state.mark_exception(error)
+        state.mt5_last_error = str(error)
         return
     state.mt5_installation = "FOUND"
     if not settings.has_mt5_credentials():
@@ -236,9 +243,11 @@ def _connect_mt5(settings, state: RuntimeState, service: Mt5Service) -> None:
         state.mt5_server = snapshot.server
         state.open_positions = len(service.get_positions())
         state.last_mt5_health = utc_now()
+        state.mt5_last_error = None
     except (Mt5ServiceError, Mt5AccountMismatchError) as error:
         logger.error("MT5 startup failed: %s", error)
         state.mark_exception(error)
+        state.mt5_last_error = str(error)
         state.mt5_connected = False
         state.mt5_account_verified = False
         state.execution_blocked = True

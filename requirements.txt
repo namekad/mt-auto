@@ -6,6 +6,7 @@ SQLAlchemy>=2.0,<3
 telethon>=1.37,<2
 python-telegram-bot>=21.6,<22
 MetaTrader5>=5.0.45
+numpy>=1.26,<3
 pytest>=8.0,<9
 pytest-asyncio>=0.24,<1
 tzdata>=2024.1

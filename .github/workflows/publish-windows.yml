@@ -25,6 +25,9 @@ jobs:
           GIT_SHA: ${{ github.sha }}
         run: pyinstaller --noconfirm trade-aut.spec
 
+      - name: Smoke test MetaTrader5 import in the built bundle
+        run: python -c "import sys; sys.path.insert(0, 'dist/TelegramMT5/_internal'); import MetaTrader5, numpy; print('MetaTrader5', MetaTrader5.__version__, 'numpy', numpy.__version__)"
+
       - name: Pack
         run: python scripts/pack_release.py dist/TelegramMT5 TelegramMT5.zip
 

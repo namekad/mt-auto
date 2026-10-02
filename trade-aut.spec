@@ -23,6 +23,7 @@ _stamp_path.write_text(f'GIT_SHA = "{_sha}"\n', encoding="utf-8")
 datas = [
     ("config/symbols.yaml", "config"),
     ("config/trading_rules.yaml", "config"),
+    ("assets/auto-trader.ico", "assets"),
     (".env.example", "."),
 ]
 binaries = []
@@ -44,6 +45,7 @@ hiddenimports = [
     "PySide6.QtGui",
     "PySide6.QtWidgets",
     "MetaTrader5",
+    "numpy",
     "telethon",
     "telegram",
     "pydantic",
@@ -56,7 +58,7 @@ hiddenimports = [
     "httpx",
 ]
 
-for package in ("telethon", "telegram", "tzdata", "MetaTrader5"):
+for package in ("telethon", "telegram", "tzdata", "MetaTrader5", "numpy"):
     collected_datas, collected_binaries, collected_hidden = collect_all(package)
     datas += collected_datas
     binaries += collected_binaries
@@ -88,6 +90,7 @@ try:
         strip=False,
         upx=True,
         console=False,
+        icon="assets/auto-trader.ico",
         disable_windowed_traceback=False,
     )
     coll = COLLECT(

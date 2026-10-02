@@ -26,7 +26,7 @@ class TelegramNotifier:
         )
 
     async def system_started(self) -> None:
-        await self.send("SYSTEM STARTED\nTelegram → MT5 automation is running.")
+        await self.send("SYSTEM STARTED\nAUTO-TRADER is running.")
 
     async def system_stopped(self) -> None:
         await self.send("SYSTEM STOPPED")

@@ -34,6 +34,7 @@ class RuntimeState:
     execution_blocked: bool = True
     symbol_mapping_ok: bool = False
     mt5_installation: str = "UNKNOWN"
+    mt5_last_error: str | None = None
 
     def mark_exception(self, error: BaseException) -> None:
         self.last_exception = f"{type(error).__name__}: {error}"

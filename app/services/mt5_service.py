@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -16,10 +17,18 @@ from app.utils.logging import get_logger
 
 try:
     import MetaTrader5 as mt5
-except ImportError:  # pragma: no cover - optional at test time
+except ImportError as _import_error:  # pragma: no cover - optional at test time
     mt5 = None
+    MT5_IMPORT_ERROR: str | None = str(_import_error)
+else:
+    MT5_IMPORT_ERROR = None
 
 logger = get_logger("mt5")
+
+
+def import_error() -> str | None:
+    """Return the real ImportError text if the MetaTrader5 package failed to load."""
+    return MT5_IMPORT_ERROR
 
 ACCOUNT_TRADE_MODE_DEMO = 0
 ACCOUNT_TRADE_MODE_CONTEST = 1
@@ -70,15 +79,72 @@ def _terminal_running() -> bool:
     return "terminal64.exe" in (result.stdout or "")
 
 
-def resolve_terminal_path(raw: str | None) -> Path | None:
-    candidates: list[Path] = []
+def _program_file_roots() -> list[Path]:
+    roots: list[Path] = []
+    for env_var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        value = os.environ.get(env_var)
+        if value:
+            root = Path(value)
+            if root not in roots:
+                roots.append(root)
+    return roots
+
+
+def _autodetect_candidates() -> list[Path]:
+    """Broader-than-default search: any MetaTrader-looking folder under Program Files."""
+    candidates: list[Path] = [DEFAULT_TERMINAL]
+    for root in _program_file_roots():
+        if not root.is_dir():
+            continue
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir() and "metatrader" in entry.name.lower():
+                candidate = entry / "terminal64.exe"
+                if candidate not in candidates:
+                    candidates.append(candidate)
+    return candidates
+
+
+@dataclass
+class TerminalLookup:
+    path: Path | None
+    checked: list[str] = field(default_factory=list)
+    configured_invalid: bool = False
+
+
+def locate_terminal(raw: str | None) -> TerminalLookup:
+    """Resolve terminal64.exe, reporting what was checked for diagnostics.
+
+    If the caller configured an explicit MT5_PATH, it is tried first. When it does
+    not resolve to a real file, the search still falls back to auto-detection, but
+    `configured_invalid` is set so the caller can report the exact bad path instead
+    of silently pretending nothing was ever configured.
+    """
+    checked: list[str] = []
+    configured_invalid = False
     if raw:
-        candidates.append(_normalize_terminal_path(raw))
-    candidates.append(DEFAULT_TERMINAL)
-    for path in candidates:
-        if path.is_file():
-            return path
-    return None
+        candidate = _normalize_terminal_path(raw)
+        if candidate.is_dir():
+            candidate = candidate / "terminal64.exe"
+        checked.append(str(candidate))
+        if candidate.is_file():
+            return TerminalLookup(candidate, checked, False)
+        configured_invalid = True
+    for candidate in _autodetect_candidates():
+        text = str(candidate)
+        if text in checked:
+            continue
+        checked.append(text)
+        if candidate.is_file():
+            return TerminalLookup(candidate, checked, configured_invalid)
+    return TerminalLookup(None, checked, configured_invalid)
+
+
+def resolve_terminal_path(raw: str | None) -> Path | None:
+    return locate_terminal(raw).path
 
 
 def auth_kwargs(settings: Settings) -> dict[str, object]:
@@ -102,8 +168,9 @@ def build_initialize_attempts(
     exe: Path | None,
     settings: Settings,
     prefer_existing: bool = False,
+    attach_only: bool = False,
 ) -> list[dict[str, object]]:
-    auth = auth_kwargs(settings)
+    auth = {} if attach_only else auth_kwargs(settings)
     timeout = INIT_TIMEOUT_MS
     with_auth_path: dict[str, object] | None = None
     path_only: dict[str, object] | None = None
@@ -115,22 +182,85 @@ def build_initialize_attempts(
         path_only = {"path": str(exe), "timeout": timeout}
     if auth:
         with_auth = {"timeout": timeout, **auth}
-    if prefer_existing:
+    if attach_only or prefer_existing:
         ordered = (path_only, auto, with_auth_path, with_auth)
     else:
         ordered = (with_auth_path, with_auth, path_only, auto)
     return [item for item in ordered if item is not None]
 
 
-def _authorization_help(settings: Settings) -> str:
+def terminal_data_dir(exe: Path) -> Path | None:
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return None
+    root = Path(appdata) / "MetaQuotes" / "Terminal"
+    if not root.is_dir():
+        return None
+    install = exe.parent.resolve()
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return None
+    for child in children:
+        origin = child / "origin.txt"
+        if not origin.is_file():
+            continue
+        text = origin.read_text(encoding="utf-8", errors="ignore").strip().strip('"')
+        try:
+            same = Path(text).resolve() == install
+        except OSError:
+            same = False
+        if same or text.lower() == str(exe.parent).lower():
+            return child
+    return None
+
+
+def authorization_failure_text(log_text: str) -> str | None:
+    last: str | None = None
+    for line in log_text.splitlines():
+        lower = line.lower()
+        if "authorization" not in lower or "failed" not in lower:
+            continue
+        parts = [part.strip() for part in line.split("\t") if part.strip()]
+        last = parts[-1] if parts else line.strip()
+    return last
+
+
+def latest_authorization_failure(exe: Path) -> str | None:
+    data = terminal_data_dir(exe)
+    if data is None:
+        return None
+    logs = data / "logs"
+    if not logs.is_dir():
+        return None
+    files = sorted(path for path in logs.glob("20*.log") if path.is_file())
+    if not files:
+        return None
+    raw = files[-1].read_bytes()
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        text = raw.decode("utf-16", errors="ignore")
+    else:
+        text = raw.decode("utf-8", errors="ignore")
+        if "authorization" not in text.lower():
+            text = raw.decode("utf-16-le", errors="ignore")
+    return authorization_failure_text(text)
+
+
+def _authorization_help(settings: Settings, exe: Path | None = None) -> str:
     login = settings.mt5_login
     server = (settings.mt5_server or "").strip() or "(empty)"
+    journal = latest_authorization_failure(exe) if exe is not None else None
+    if journal:
+        return (
+            f" MetaTrader refused this sign-in: {journal}. "
+            "The account can still be listed in the Navigator after the server rejects it. "
+            "In MetaTrader use File, Login to Trade Account, and sign in with an account the server accepts. "
+            "Then press Start again."
+        )
     return (
         f" MT5 rejected login {login} on server {server}. "
-        "Open MetaTrader 5 Desktop → File → Login to Trade Account, "
-        "then copy the Login and Server exactly. "
-        "MetaQuotes-Demo only works for a demo opened in this official MetaQuotes terminal. "
-        "A broker demo (Exness, XM, IC Markets, and similar) needs that broker's MT5 and server name."
+        "Open MetaTrader 5 Desktop, use File, Login to Trade Account, "
+        "and copy the Login and Server from an account that is actually connected."
     )
 
 
@@ -294,11 +424,24 @@ class Mt5Service:
 
     def initialize(self) -> bool:
         if mt5 is None:
-            raise Mt5ServiceError("MetaTrader5 package is not installed.")
-        exe = resolve_terminal_path(self._settings.mt5_path)
-        if exe is None:
             raise Mt5ServiceError(
-                "terminal64.exe was not found. Set MT5_PATH to the desktop terminal."
+                "The MetaTrader5 Python package failed to load inside this app "
+                f"({MT5_IMPORT_ERROR or 'module not installed'}). "
+                "Reinstall the app, or run `pip install MetaTrader5` if you are running from source."
+            )
+        lookup = locate_terminal(self._settings.mt5_path)
+        exe = lookup.path
+        if exe is None:
+            checked = ", ".join(lookup.checked) or "(nothing to check)"
+            if lookup.configured_invalid:
+                raise Mt5ServiceError(
+                    f"MT5_PATH is set to '{self._settings.mt5_path}' but terminal64.exe was not "
+                    f"found there, and auto-detect did not find it either. Checked: {checked}. "
+                    "Open Setup and pick terminal64.exe inside your MetaTrader 5 install folder."
+                )
+            raise Mt5ServiceError(
+                f"terminal64.exe was not found automatically. Checked: {checked}. "
+                "Open Setup and set MT5_PATH to your MetaTrader 5 terminal64.exe."
             )
         already_running = _terminal_running()
         if not already_running:
@@ -310,7 +453,12 @@ class Mt5Service:
                     time.sleep(5)
                     break
         last_error: object = None
-        for kwargs in build_initialize_attempts(exe, self._settings, already_running):
+        # Attach to the open terminal only. Passing login and server into
+        # initialize waits for a long time on a saved account and shows no error.
+        # login() switches to the account from Setup after the terminal is attached.
+        for kwargs in build_initialize_attempts(
+            exe, self._settings, already_running, attach_only=True
+        ):
             logger.info("MT5 initialize try: %s", describe_initialize_kwargs(kwargs))
             ok = False
             for _attempt in range(3):
@@ -334,7 +482,7 @@ class Mt5Service:
             )
         extra = ""
         if isinstance(last_error, tuple) and last_error and last_error[0] == -6:
-            extra = _authorization_help(self._settings)
+            extra = _authorization_help(self._settings, exe)
         raise Mt5ServiceError(
             f"MT5 initialize failed: {last_error}.{extra} "
             "Leave the desktop terminal open, then Start again."
@@ -377,7 +525,8 @@ class Mt5Service:
             extra = ""
             error = mt5.last_error()
             if error and error[0] == -6:
-                extra = _authorization_help(self._settings)
+                exe = resolve_terminal_path(self._settings.mt5_path)
+                extra = _authorization_help(self._settings, exe)
             current = mt5.account_info()
             if current is not None:
                 extra += (

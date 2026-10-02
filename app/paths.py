@@ -14,6 +14,10 @@ def resource_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def app_icon_path() -> Path:
+    return resource_dir() / "assets" / "auto-trader.ico"
+
+
 def user_dir() -> Path:
     if is_frozen():
         return Path(sys.executable).resolve().parent
