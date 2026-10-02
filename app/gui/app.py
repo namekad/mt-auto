@@ -59,6 +59,7 @@ from app.gui.feed import (
 from app.gui.prefs import load_trades_tab, save_trades_tab
 from app.gui.theme import AMBER, APP_STYLESHEET, GREEN, MUTED, RED, TEXT
 from app.paths import ensure_runtime_files, is_frozen
+from app.release_update import build_label, installed_sha
 from app.runtime_host import RuntimeHost
 from app.trading.models import Setup, SetupState
 from app.updater import UpdateWatcher, relaunch, repo_root
@@ -221,6 +222,7 @@ class _ChannelLoader(QThread):
 
 class AppWindow(QMainWindow):
     prompt_requested = Signal(str, str, bool, object)
+    update_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -268,6 +270,7 @@ class AppWindow(QMainWindow):
         self._nav_buttons: dict[str, QPushButton] = {}
         self._tab_buttons: dict[str, QPushButton] = {}
         self.prompt_requested.connect(self._show_prompt)
+        self.update_requested.connect(self._restart_for_update)
         self._build()
         self._load_settings_into_form()
         self._show_page("trades")
@@ -322,6 +325,9 @@ class AppWindow(QMainWindow):
         note = QLabel("Demo setups")
         note.setObjectName("muted")
         layout.addWidget(note)
+        build = QLabel(build_label(installed_sha()))
+        build.setObjectName("muted")
+        layout.addWidget(build)
         layout.addSpacing(18)
         for name in NAV_PAGES:
             button = QPushButton(NAV_LABELS[name])
@@ -1300,7 +1306,7 @@ class AppWindow(QMainWindow):
             self._request_setups()
 
     def _schedule_update_restart(self) -> None:
-        QTimer.singleShot(0, self._restart_for_update)
+        self.update_requested.emit()
 
     def _restart_for_update(self) -> None:
         if self._closing:

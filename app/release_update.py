@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -13,6 +14,8 @@ from pathlib import Path
 
 from app.build_stamp import GIT_SHA
 from app.paths import user_dir
+
+logger = logging.getLogger("application")
 
 RELEASES_URL = "https://api.github.com/repos/namekad/mt-auto/releases/latest"
 ASSET_NAME = "TelegramMT5.zip"
@@ -55,6 +58,13 @@ class PendingApply:
 
 def installed_sha() -> str:
     return GIT_SHA.strip()
+
+
+def build_label(sha: str) -> str:
+    cleaned = sha.strip()
+    if not cleaned:
+        return "Build dev"
+    return f"Build {cleaned[:7]}"
 
 
 def release_needs_update(local_sha: str, remote_sha: str) -> bool:
@@ -152,6 +162,7 @@ def _download(url: str, dest: Path) -> None:
 
 def prepare_release_update(local_sha: str) -> PendingApply | None:
     release = fetch_latest_release()
+    logger.info("Installed %s, latest release %s", build_label(local_sha), release.sha)
     if not release_needs_update(local_sha, release.sha):
         return None
     stage = Path(tempfile.gettempdir()) / "mt5-auto-update" / release.sha
@@ -167,11 +178,20 @@ def prepare_release_update(local_sha: str) -> PendingApply | None:
 
 
 def launch_apply(pending: PendingApply, pid: int) -> None:
-    flags = 0
-    if os.name == "nt":
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-    subprocess.Popen(
-        ["cmd", "/c", str(pending.script), str(pid), str(pending.source), str(pending.dest)],
-        creationflags=flags,
-        close_fds=True,
+    command = ["cmd", "/c", str(pending.script), str(pid), str(pending.source), str(pending.dest)]
+    if os.name != "nt":
+        subprocess.Popen(command, close_fds=True)
+        return
+    detached = (
+        subprocess.DETACHED_PROCESS
+        | subprocess.CREATE_NEW_PROCESS_GROUP
+        | subprocess.CREATE_BREAKAWAY_FROM_JOB
     )
+    try:
+        subprocess.Popen(command, creationflags=detached, close_fds=True)
+    except OSError:
+        subprocess.Popen(
+            command,
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )

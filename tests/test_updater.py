@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.release_update import (
+    build_label,
     extract_package,
     pack_dist,
     parse_latest_release,
@@ -86,6 +87,11 @@ def test_release_needs_update_when_build_sha_differs() -> None:
     assert not release_needs_update("aaa", "aaa")
     assert release_needs_update("", "bbb")
     assert not release_needs_update("aaa", "")
+
+
+def test_build_label_uses_a_short_sha() -> None:
+    assert build_label("") == "Build dev"
+    assert build_label("cfd8ed0fadca0346") == "Build cfd8ed0"
 
 
 def test_release_sha_from_tag_strips_build_prefix() -> None:
