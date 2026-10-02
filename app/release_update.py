@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import logging
 import os
@@ -28,11 +29,15 @@ param(
     [string]$Dest
 )
 
+$log = Join-Path $env:TEMP "mt5-update.log"
+"[$(Get-Date)] started  pid=$AppPid src=$Source dst=$Dest" | Out-File $log -Append
+
 # Wait until the old process is fully gone
 $intPid = [int]$AppPid
 while ($null -ne (Get-Process -Id $intPid -ErrorAction SilentlyContinue)) {
     Start-Sleep -Milliseconds 400
 }
+"[$(Get-Date)] process exited" | Out-File $log -Append
 
 # Give Windows 2 seconds to release any remaining file-mapping locks
 Start-Sleep -Seconds 2
@@ -40,7 +45,13 @@ Start-Sleep -Seconds 2
 # Replace the executable
 $exeDest = Join-Path $Dest "TelegramMT5.exe"
 $exeSrc  = Join-Path $Source "TelegramMT5.exe"
-Copy-Item -Path $exeSrc -Destination $exeDest -Force -ErrorAction Stop
+try {
+    Copy-Item -Path $exeSrc -Destination $exeDest -Force -ErrorAction Stop
+    "[$(Get-Date)] exe copied ok" | Out-File $log -Append
+} catch {
+    "[$(Get-Date)] exe copy FAILED: $_" | Out-File $log -Append
+    exit 1
+}
 
 # Sync the _internal bundle
 $srcInt = Join-Path $Source "_internal"
@@ -49,11 +60,19 @@ if (Test-Path $dstInt) {
     Remove-Item $dstInt -Recurse -Force -ErrorAction SilentlyContinue
 }
 if (Test-Path $srcInt) {
-    Copy-Item -Path $srcInt -Destination $dstInt -Recurse -Force -ErrorAction Stop
+    try {
+        Copy-Item -Path $srcInt -Destination $dstInt -Recurse -Force -ErrorAction Stop
+        "[$(Get-Date)] _internal copied ok" | Out-File $log -Append
+    } catch {
+        "[$(Get-Date)] _internal copy FAILED: $_" | Out-File $log -Append
+        exit 1
+    }
 }
 
 # Relaunch the updated app from its own directory
+"[$(Get-Date)] launching $exeDest" | Out-File $log -Append
 Start-Process -FilePath $exeDest -WorkingDirectory $Dest
+"[$(Get-Date)] done" | Out-File $log -Append
 
 # Clean up staging area
 Start-Sleep -Seconds 3
@@ -241,29 +260,24 @@ def prepare_release_update(local_sha: str) -> PendingApply | None:
 
 
 def launch_apply(pending: PendingApply, pid: int) -> None:
-    command = [
-        "powershell",
-        "-ExecutionPolicy", "Bypass",
-        "-NonInteractive",
-        "-WindowStyle", "Hidden",
-        "-File", str(pending.script),
-        "-AppPid", str(pid),
-        "-Source", str(pending.source),
-        "-Dest", str(pending.dest),
-    ]
-    if os.name != "nt":
-        subprocess.Popen(command, close_fds=True)
-        return
-    detached = (
-        subprocess.DETACHED_PROCESS
-        | subprocess.CREATE_NEW_PROCESS_GROUP
-        | subprocess.CREATE_BREAKAWAY_FROM_JOB
+    args = (
+        f'-ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden'
+        f' -File "{pending.script}"'
+        f' -AppPid {pid}'
+        f' -Source "{pending.source}"'
+        f' -Dest "{pending.dest}"'
     )
-    try:
-        subprocess.Popen(command, creationflags=detached, close_fds=True)
-    except OSError:
-        subprocess.Popen(
-            command,
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-            close_fds=True,
-        )
+    if os.name != "nt":
+        subprocess.Popen(["powershell"] + args.split(), close_fds=True)
+        return
+    # ShellExecuteW is the most reliable way to launch a process that must
+    # outlive its parent on Windows — it goes through the shell job manager
+    # and is never in the same job object as the caller.
+    ctypes.windll.shell32.ShellExecuteW(
+        None,       # hwnd
+        "open",     # verb
+        "powershell.exe",
+        args,
+        None,       # working directory (None = inherit)
+        0,          # SW_HIDE
+    )
