@@ -1427,8 +1427,6 @@ class AppWindow(QMainWindow):
             pill = "Stopped"
             copy = "Open Setup if this is the first time, then press Start."
         values = self._form_values()
-        if not running and not (values.get("TELEGRAM_API_ID") or values.get("TELEGRAM_BOT_TOKEN")):
-            copy = "Add Telegram details in Setup, then press Start."
         pill_name = "pillWait" if paused else "pillOn" if running else "pillOff"
         self._paint(self._status_pill, pill_name, pill)
         if self._status_copy.text() != copy:
