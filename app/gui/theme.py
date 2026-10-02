@@ -121,6 +121,19 @@ QPushButton#pause:disabled, QPushButton#resume:disabled {{
     color: {MUTED};
     border: 1px solid {BORDER};
 }}
+QPushButton#start {{
+    background: {GREEN};
+    color: {INK};
+    border: none;
+    font-weight: 700;
+}}
+QPushButton#start:hover {{
+    background: #2EC888;
+}}
+QPushButton#start:disabled {{
+    background: {BORDER};
+    color: {MUTED};
+}}
 QPushButton#primary {{
     background: {BLUE};
     color: white;

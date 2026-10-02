@@ -354,7 +354,7 @@ class AppWindow(QMainWindow):
         self._status_copy.setWordWrap(True)
         layout.addWidget(self._status_copy, 1)
         self._start_btn = QPushButton("Start")
-        self._start_btn.setObjectName("primary")
+        self._start_btn.setObjectName("start")
         self._start_btn.clicked.connect(self._start)
         self._pause_btn = QPushButton("Pause")
         self._pause_btn.setObjectName("pause")
