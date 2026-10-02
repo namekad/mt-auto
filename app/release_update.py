@@ -56,8 +56,15 @@ class PendingApply:
     dest: Path
 
 
+APP_VERSION = "0.0.2"
+
+
 def installed_sha() -> str:
     return GIT_SHA.strip()
+
+
+def version_label() -> str:
+    return f"[{APP_VERSION}]"
 
 
 def build_label(sha: str) -> str:
@@ -162,7 +169,12 @@ def _download(url: str, dest: Path) -> None:
 
 def prepare_release_update(local_sha: str) -> PendingApply | None:
     release = fetch_latest_release()
-    logger.info("Installed %s, latest release %s", build_label(local_sha), release.sha)
+    logger.info(
+        "Installed %s (%s), latest release %s",
+        version_label(),
+        local_sha.strip() or "dev",
+        release.sha,
+    )
     if not release_needs_update(local_sha, release.sha):
         return None
     stage = Path(tempfile.gettempdir()) / "mt5-auto-update" / release.sha

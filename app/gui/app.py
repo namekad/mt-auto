@@ -59,7 +59,7 @@ from app.gui.feed import (
 from app.gui.prefs import load_trades_tab, save_trades_tab
 from app.gui.theme import AMBER, APP_STYLESHEET, GREEN, MUTED, RED, TEXT
 from app.paths import ensure_runtime_files, is_frozen
-from app.release_update import build_label, installed_sha
+from app.release_update import version_label
 from app.runtime_host import RuntimeHost
 from app.trading.models import Setup, SetupState
 from app.updater import UpdateWatcher, relaunch, repo_root
@@ -325,7 +325,7 @@ class AppWindow(QMainWindow):
         note = QLabel("Demo setups")
         note.setObjectName("muted")
         layout.addWidget(note)
-        build = QLabel(build_label(installed_sha()))
+        build = QLabel(version_label())
         build.setObjectName("muted")
         layout.addWidget(build)
         layout.addSpacing(18)

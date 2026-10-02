@@ -7,6 +7,7 @@ import pytest
 
 from app.release_update import (
     build_label,
+    version_label,
     extract_package,
     pack_dist,
     parse_latest_release,
@@ -87,6 +88,10 @@ def test_release_needs_update_when_build_sha_differs() -> None:
     assert not release_needs_update("aaa", "aaa")
     assert release_needs_update("", "bbb")
     assert not release_needs_update("aaa", "")
+
+
+def test_version_label_is_the_app_version() -> None:
+    assert version_label() == "[0.0.2]"
 
 
 def test_build_label_uses_a_short_sha() -> None:

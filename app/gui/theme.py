@@ -148,13 +148,18 @@ QPushButton#primary:disabled {{
     color: {MUTED};
 }}
 QPushButton#danger {{
-    background: {RED};
-    color: white;
-    border: none;
+    background: white;
+    color: {RED};
+    border: 1px solid {RED};
     font-weight: 700;
 }}
 QPushButton#danger:hover {{
-    background: #E14B61;
+    background: #FFF1F3;
+}}
+QPushButton#danger:disabled {{
+    background: {BG};
+    color: {MUTED};
+    border: 1px solid {BORDER};
 }}
 QPushButton#nav {{
     text-align: left;
