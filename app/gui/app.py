@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -59,7 +60,7 @@ from app.gui.feed import (
 from app.gui.prefs import load_trades_tab, save_trades_tab
 from app.gui.theme import AMBER, APP_STYLESHEET, GREEN, MUTED, RED, TEXT
 from app.paths import ensure_runtime_files, is_frozen
-from app.release_update import version_label
+from app.release_update import PendingApply, ReleaseAsset, ReleaseCheckError, build_label, download_release_update, installed_sha, version_label
 from app.runtime_host import RuntimeHost
 from app.trading.models import Setup, SetupState
 from app.updater import UpdateWatcher, relaunch, repo_root
@@ -220,9 +221,178 @@ class _ChannelLoader(QThread):
         self.loaded.emit(rows)
 
 
+# ---------------------------------------------------------------------------
+# Auto-update UI
+# ---------------------------------------------------------------------------
+
+def _fmt_bytes(n: int) -> str:
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+class _DownloadWorker(QThread):
+    """Downloads a release asset on a background thread and reports progress."""
+
+    progress = Signal(int, int)   # bytes_downloaded, bytes_total
+    finished = Signal(object)     # PendingApply
+    failed = Signal(str)          # error message
+
+    def __init__(self, asset: ReleaseAsset) -> None:
+        super().__init__()
+        self._asset = asset
+
+    def run(self) -> None:
+        try:
+            pending = download_release_update(self._asset, on_progress=self._emit_progress)
+            self.finished.emit(pending)
+        except ReleaseCheckError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+    def _emit_progress(self, downloaded: int, total: int) -> None:
+        self.progress.emit(downloaded, total)
+
+
+class UpdateDialog(QDialog):
+    """Professional update-available dialog with download progress and user consent."""
+
+    restart_requested = Signal(object)   # PendingApply
+
+    def __init__(self, asset: ReleaseAsset, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._asset = asset
+        self._worker: _DownloadWorker | None = None
+        self._pending: object = None
+        self._build_ui()
+
+    # ------------------------------------------------------------------
+    def _build_ui(self) -> None:
+        self.setWindowTitle("Update Available")
+        self.setFixedWidth(500)
+        self.setModal(True)
+        self.setWindowFlags(
+            Qt.WindowType.Dialog | Qt.WindowType.WindowCloseButtonHint
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(32, 28, 32, 24)
+        root.setSpacing(0)
+
+        # ── Header ──────────────────────────────────────────────────
+        header = QLabel("🔄  New Version Available")
+        header.setObjectName("title")
+        root.addWidget(header)
+        root.addSpacing(16)
+
+        # ── Version rows ─────────────────────────────────────────────
+        cur_sha = installed_sha()
+        cur_lbl = QLabel(f"Installed:   {build_label(cur_sha) if cur_sha else 'dev'}")
+        cur_lbl.setObjectName("muted")
+        new_lbl = QLabel(f"Available:   {build_label(self._asset.sha)}")
+        root.addWidget(cur_lbl)
+        root.addSpacing(4)
+        root.addWidget(new_lbl)
+        root.addSpacing(20)
+
+        # ── Progress bar (hidden until download starts) ───────────────
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+        self._bar.setFixedHeight(10)
+        self._bar.setTextVisible(False)
+        self._bar.setVisible(False)
+        root.addWidget(self._bar)
+        root.addSpacing(8)
+
+        # ── Status label ─────────────────────────────────────────────
+        self._status = QLabel("Download and install the latest build.")
+        self._status.setObjectName("muted")
+        root.addWidget(self._status)
+        root.addSpacing(24)
+
+        # ── Button row ───────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(12)
+
+        self._later_btn = QPushButton("Later")
+        self._later_btn.setFixedWidth(90)
+        self._later_btn.clicked.connect(self.reject)
+
+        self._action_btn = QPushButton("Update Now")
+        self._action_btn.setObjectName("primary")
+        self._action_btn.setFixedWidth(150)
+        self._action_btn.clicked.connect(self._on_action)
+
+        btn_row.addWidget(self._later_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(self._action_btn)
+        root.addLayout(btn_row)
+
+    # ------------------------------------------------------------------
+    def _on_action(self) -> None:
+        if self._pending is not None:
+            # Download already finished — restart now.
+            self.restart_requested.emit(self._pending)
+            self.accept()
+            return
+        self._start_download()
+
+    def _start_download(self) -> None:
+        self._action_btn.setEnabled(False)
+        self._action_btn.setText("Downloading…")
+        self._later_btn.setEnabled(False)
+        self._bar.setVisible(True)
+        self._status.setText("Connecting to GitHub…")
+
+        self._worker = _DownloadWorker(self._asset)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.start()
+
+    def _on_progress(self, downloaded: int, total: int) -> None:
+        if total > 0:
+            pct = int(downloaded * 100 / total)
+            self._bar.setValue(pct)
+            self._status.setText(
+                f"Downloading…  {_fmt_bytes(downloaded)} / {_fmt_bytes(total)}  ({pct}%)"
+            )
+        else:
+            self._status.setText(f"Downloading…  {_fmt_bytes(downloaded)}")
+
+    def _on_finished(self, pending: object) -> None:
+        self._pending = pending
+        self._bar.setValue(100)
+        self._status.setText("✅  Download complete — ready to install.")
+        self._action_btn.setText("Restart & Install")
+        self._action_btn.setEnabled(True)
+        self._later_btn.setText("Later")
+        self._later_btn.setEnabled(True)
+
+    def _on_failed(self, message: str) -> None:
+        self._bar.setVisible(False)
+        self._status.setText(f"❌  Download failed: {message}")
+        self._action_btn.setText("Retry")
+        self._action_btn.setEnabled(True)
+        self._later_btn.setEnabled(True)
+        self._pending = None
+        self._worker = None
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        if self._worker is not None and self._worker.isRunning():
+            # Don't interrupt an in-progress download; just hide the dialog.
+            self.hide()
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
 class AppWindow(QMainWindow):
     prompt_requested = Signal(str, str, bool, object)
     update_requested = Signal()
+    update_available = Signal(object)   # ReleaseAsset – emitted from background thread
 
     def __init__(self) -> None:
         super().__init__()
@@ -271,10 +441,14 @@ class AppWindow(QMainWindow):
         self._tab_buttons: dict[str, QPushButton] = {}
         self.prompt_requested.connect(self._show_prompt)
         self.update_requested.connect(self._restart_for_update)
+        self.update_available.connect(self._show_update_dialog)
         self._build()
         self._load_settings_into_form()
         self._show_page("trades")
-        self._updater = UpdateWatcher(on_restart=self._schedule_update_restart)
+        self._updater = UpdateWatcher(
+            on_restart=self._schedule_update_restart,
+            on_update_available=self._on_update_available,
+        )
         self._updater.start()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._pump)
@@ -1307,6 +1481,23 @@ class AppWindow(QMainWindow):
 
     def _schedule_update_restart(self) -> None:
         self.update_requested.emit()
+
+    def _on_update_available(self, asset: ReleaseAsset) -> None:
+        """Called from the updater background thread — forward to the GUI thread."""
+        self.update_available.emit(asset)
+
+    def _show_update_dialog(self, asset: ReleaseAsset) -> None:
+        """Show the update dialog (runs on the main thread)."""
+        dlg = UpdateDialog(asset, parent=self)
+        dlg.restart_requested.connect(self._do_install_update)
+        dlg.show()
+
+    def _do_install_update(self, pending: object) -> None:
+        """Apply a downloaded update: tell the updater about the pending apply then exit."""
+        if not isinstance(pending, PendingApply):
+            return
+        self._updater.set_pending_apply(pending)
+        self._restart_for_update()
 
     def _restart_for_update(self) -> None:
         if self._closing:

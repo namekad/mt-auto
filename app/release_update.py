@@ -9,6 +9,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -151,23 +152,33 @@ def fetch_latest_release() -> ReleaseAsset:
     return parsed
 
 
-def _download(url: str, dest: Path) -> None:
+def _download(
+    url: str,
+    dest: Path,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> None:
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "mt5-auto", "Accept": "application/octet-stream"},
     )
     try:
         with urllib.request.urlopen(request, timeout=120) as response, dest.open("wb") as handle:
+            total = int(response.headers.get("Content-Length") or 0)
+            downloaded = 0
             while True:
                 chunk = response.read(256 * 1024)
                 if not chunk:
                     break
                 handle.write(chunk)
+                downloaded += len(chunk)
+                if on_progress is not None:
+                    on_progress(downloaded, total)
     except urllib.error.URLError as error:
         raise ReleaseCheckError(str(error.reason)) from error
 
 
-def prepare_release_update(local_sha: str) -> PendingApply | None:
+def check_release_update(local_sha: str) -> ReleaseAsset | None:
+    """Check GitHub for a newer release.  Returns the asset if an update is needed, else None."""
     release = fetch_latest_release()
     logger.info(
         "Installed %s (%s), latest release %s",
@@ -177,16 +188,32 @@ def prepare_release_update(local_sha: str) -> PendingApply | None:
     )
     if not release_needs_update(local_sha, release.sha):
         return None
-    stage = Path(tempfile.gettempdir()) / "mt5-auto-update" / release.sha
+    return release
+
+
+def download_release_update(
+    asset: ReleaseAsset,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> PendingApply:
+    """Download and extract a release asset, returning a PendingApply ready to launch."""
+    stage = Path(tempfile.gettempdir()) / "mt5-auto-update" / asset.sha
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
     zip_path = stage / ASSET_NAME
-    _download(release.download_url, zip_path)
+    _download(asset.download_url, zip_path, on_progress=on_progress)
     package = extract_package(zip_path, stage / "pkg")
     script = stage / "apply-update.bat"
     script.write_text(_APPLY_BAT, encoding="utf-8")
     return PendingApply(script=script, source=package, dest=user_dir())
+
+
+def prepare_release_update(local_sha: str) -> PendingApply | None:
+    """Legacy: check and download in one call. Prefer check_release_update + download_release_update."""
+    asset = check_release_update(local_sha)
+    if asset is None:
+        return None
+    return download_release_update(asset)
 
 
 def launch_apply(pending: PendingApply, pid: int) -> None:

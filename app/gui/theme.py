@@ -235,4 +235,17 @@ QScrollBar::handle:vertical {{
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
 }}
+QProgressBar {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    height: 10px;
+    text-align: center;
+    color: {TEXT};
+    font-size: 11px;
+}}
+QProgressBar::chunk {{
+    background: {BLUE};
+    border-radius: 5px;
+}}
 """

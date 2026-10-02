@@ -13,10 +13,12 @@ from pathlib import Path
 from app.paths import is_frozen, user_dir
 from app.release_update import (
     PendingApply,
+    ReleaseAsset,
     ReleaseCheckError,
+    check_release_update,
+    download_release_update,
     installed_sha,
     launch_apply,
-    prepare_release_update,
 )
 
 logger = logging.getLogger("application")
@@ -171,8 +173,13 @@ def relaunch(module: str, root: Path) -> None:
 
 
 class UpdateWatcher:
-    def __init__(self, on_restart: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        on_restart: Callable[[], None],
+        on_update_available: Callable[[ReleaseAsset], None] | None = None,
+    ) -> None:
         self._on_restart = on_restart
+        self._on_update_available = on_update_available
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -180,6 +187,7 @@ class UpdateWatcher:
         self._announced: set[str] = set()
         self._startup_sha: str | None = None
         self._pending_apply: PendingApply | None = None
+        self._notified_sha: str | None = None
 
     def start(self) -> None:
         if is_frozen():
@@ -195,6 +203,9 @@ class UpdateWatcher:
             return
         self._thread = threading.Thread(target=self._loop, name="update-watcher", daemon=True)
         self._thread.start()
+
+    def set_pending_apply(self, pending: PendingApply) -> None:
+        self._pending_apply = pending
 
     def launch_pending_apply(self) -> bool:
         pending = self._pending_apply
@@ -239,15 +250,36 @@ class UpdateWatcher:
         if self._busy:
             return
         try:
-            pending = prepare_release_update(installed_sha())
+            asset = check_release_update(installed_sha())
         except ReleaseCheckError as error:
             self._once("release-offline", f"Could not check GitHub for a new build: {error}")
             return
-        if pending is None:
+        if asset is None:
             return
-        self._pending_apply = pending
-        logger.info("New build downloaded. Restarting to install it.")
-        self._fire()
+        # Don't notify the user twice for the same SHA within this session.
+        if self._notified_sha == asset.sha:
+            return
+        self._notified_sha = asset.sha
+        if self._on_update_available is not None:
+            # Hand off to the GUI — the user will decide when to install.
+            self._on_update_available(asset)
+        else:
+            # Headless / legacy fallback: download silently then restart.
+            with self._lock:
+                if self._busy:
+                    return
+                self._busy = True
+            try:
+                pending = download_release_update(asset)
+            except ReleaseCheckError as error:
+                logger.error("Update download failed: %s", error)
+                with self._lock:
+                    self._busy = False
+                self._notified_sha = None  # allow retry next cycle
+                return
+            self._pending_apply = pending
+            logger.info("New build downloaded. Restarting to install it.")
+            self._fire()
 
     def _tick(self) -> None:
         root = repo_root()
