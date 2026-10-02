@@ -21,22 +21,46 @@ logger = logging.getLogger("application")
 RELEASES_URL = "https://api.github.com/repos/namekad/mt-auto/releases/latest"
 ASSET_NAME = "TelegramMT5.zip"
 EXE_NAME = "TelegramMT5.exe"
-_APPLY_BAT = """@echo off
-setlocal
-set "PID=%~1"
-set "SOURCE=%~2"
-set "DEST=%~3"
-:wait
-tasklist /FI "PID eq %PID%" 2>nul | findstr /I "TelegramMT5" >nul
-if not errorlevel 1 (
-  ping 127.0.0.1 -n 2 >nul
-  goto wait
+_APPLY_PS1 = r"""
+param(
+    [string]$AppPid,
+    [string]$Source,
+    [string]$Dest
 )
-robocopy "%SOURCE%" "%DEST%" TelegramMT5.exe /R:10 /W:2 /NFL /NDL /NJH /NJS
-if exist "%DEST%\\_internal" rmdir /s /q "%DEST%\\_internal"
-robocopy "%SOURCE%\\_internal" "%DEST%\\_internal" /E /R:5 /W:1 /NFL /NDL /NJH /NJS
-start "" "%DEST%\\TelegramMT5.exe"
-rmdir /s /q "%SOURCE%"
+
+# Wait until the old process is fully gone
+$intPid = [int]$AppPid
+while ($null -ne (Get-Process -Id $intPid -ErrorAction SilentlyContinue)) {
+    Start-Sleep -Milliseconds 400
+}
+
+# Give Windows 2 seconds to release any remaining file-mapping locks
+Start-Sleep -Seconds 2
+
+# Replace the executable
+$exeDest = Join-Path $Dest "TelegramMT5.exe"
+$exeSrc  = Join-Path $Source "TelegramMT5.exe"
+Copy-Item -Path $exeSrc -Destination $exeDest -Force -ErrorAction Stop
+
+# Sync the _internal bundle
+$srcInt = Join-Path $Source "_internal"
+$dstInt = Join-Path $Dest "_internal"
+if (Test-Path $dstInt) {
+    Remove-Item $dstInt -Recurse -Force -ErrorAction SilentlyContinue
+}
+if (Test-Path $srcInt) {
+    Copy-Item -Path $srcInt -Destination $dstInt -Recurse -Force -ErrorAction Stop
+}
+
+# Relaunch the updated app from its own directory
+Start-Process -FilePath $exeDest -WorkingDirectory $Dest
+
+# Clean up staging area
+Start-Sleep -Seconds 3
+$stageRoot = Split-Path $Source -Parent
+if ($stageRoot -and (Test-Path $stageRoot)) {
+    Remove-Item $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 """
 
 
@@ -203,8 +227,8 @@ def download_release_update(
     zip_path = stage / ASSET_NAME
     _download(asset.download_url, zip_path, on_progress=on_progress)
     package = extract_package(zip_path, stage / "pkg")
-    script = stage / "apply-update.bat"
-    script.write_text(_APPLY_BAT, encoding="utf-8")
+    script = stage / "apply-update.ps1"
+    script.write_text(_APPLY_PS1, encoding="utf-8")
     return PendingApply(script=script, source=package, dest=user_dir())
 
 
@@ -217,7 +241,16 @@ def prepare_release_update(local_sha: str) -> PendingApply | None:
 
 
 def launch_apply(pending: PendingApply, pid: int) -> None:
-    command = ["cmd", "/c", str(pending.script), str(pid), str(pending.source), str(pending.dest)]
+    command = [
+        "powershell",
+        "-ExecutionPolicy", "Bypass",
+        "-NonInteractive",
+        "-WindowStyle", "Hidden",
+        "-File", str(pending.script),
+        "-AppPid", str(pid),
+        "-Source", str(pending.source),
+        "-Dest", str(pending.dest),
+    ]
     if os.name != "nt":
         subprocess.Popen(command, close_fds=True)
         return
